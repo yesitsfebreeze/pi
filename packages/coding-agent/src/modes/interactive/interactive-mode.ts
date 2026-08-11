@@ -129,6 +129,7 @@ import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import { MessageStatusComponent } from "./components/message-status.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
 	type AuthSelectorProvider,
@@ -438,6 +439,9 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private responseStartTime = 0;
+	// Cumulative session cost, updated incrementally on each message_end.
+	private cumulativeSessionCost = 0;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -884,7 +888,6 @@ export class InteractiveMode {
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
-			{ component: this.footerContainer, shrink: 1, minSize: 1 },
 		]);
 		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
 			{ component: this.transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
@@ -897,7 +900,6 @@ export class InteractiveMode {
 			this.widgetContainerAbove,
 			this.editorContainer,
 			this.widgetContainerBelow,
-			this.footerContainer,
 		]);
 		this.ui.setFocus(this.editor);
 
@@ -3166,6 +3168,7 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					this.responseStartTime = Date.now();
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -3231,6 +3234,15 @@ export class InteractiveMode {
 					}
 					this.streamingComponent.updateContent(this.streamingMessage, false);
 
+					const durationMs = Date.now() - this.responseStartTime;
+					const modelName = this.session.state.model?.id || "unknown";
+					const thinkingLevel = this.session.state.thinkingLevel;
+
+					// Update cumulative cost incrementally (O(1) per response).
+					if (this.streamingMessage.usage) {
+						this.cumulativeSessionCost += this.streamingMessage.usage.cost.total;
+					}
+
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
 							errorMessage = this.streamingMessage.errorMessage || "Error";
@@ -3242,16 +3254,44 @@ export class InteractiveMode {
 							});
 						}
 						this.pendingTools.clear();
+
+						// Show error status line with partial token/cost data if available.
+						if (this.streamingMessage.usage) {
+							this.chatContainer.addChild(
+								new MessageStatusComponent({
+									usage: this.streamingMessage.usage,
+									durationMs,
+									modelName,
+									thinkingLevel,
+									sessionCost: this.cumulativeSessionCost,
+									isError: true,
+									errorLabel: errorMessage,
+								}),
+							);
+						}
 					} else {
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
 							component.setArgsComplete();
 						}
 						this.maybeShowCacheMissNotice(this.streamingMessage);
+
+						// Append per-response status below the assistant message.
+						if (this.streamingMessage.usage) {
+							this.chatContainer.addChild(
+								new MessageStatusComponent({
+									usage: this.streamingMessage.usage,
+									durationMs,
+									modelName,
+									thinkingLevel,
+									sessionCost: this.cumulativeSessionCost,
+								}),
+							);
+						}
 					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
-					this.footer.invalidate();
+					this.responseStartTime = 0;
 				}
 				this.ui.requestRender();
 				break;
