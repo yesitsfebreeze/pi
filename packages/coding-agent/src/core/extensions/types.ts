@@ -53,6 +53,7 @@ import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
+export type { CustomMessage };
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type {
@@ -1241,7 +1242,10 @@ export interface ExtensionAPI {
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+		on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+
+	/** Get the current working directory. */
+	getCwd?(): string;
 
 	// =========================================================================
 	// Tool Registration
@@ -1298,6 +1302,8 @@ export interface ExtensionAPI {
 	// Actions
 	// =========================================================================
 
+	/** Get current working directory for the agent process. */
+	cwd?: string;
 	/** Send a custom message to the session. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,

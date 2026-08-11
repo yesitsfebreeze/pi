@@ -26,6 +26,42 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function safeJson(path: string): Record<string, unknown> | null {
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return null;
+	}
+}
+function readDirNames(dir: string) {
+	return readdirSync(dir).filter((e) => {
+		try {
+			return statSync(join(dir, e)).isDirectory();
+		} catch {
+			return false;
+		}
+	});
+}
+function extractSections(text: string, headings: string[]) {
+	const sections = [];
+	for (const h of headings) {
+		const escaped = h.replace(/[.*+?^${}()|[\]\\\\]/g, "\\\\$&");
+		const re = new RegExp(`##\\\\s+${escaped}\\\\b[^#]*`, "i");
+		const m = text.match(re);
+		if (m) {
+			const start = m.index! + m[0].length;
+			const nextHead = text.indexOf("\\n#", start);
+			const end = nextHead >= 0 ? nextHead : text.length;
+			const body = text.slice(start, end).trim();
+			if (body) sections.push(`## ${h}\n${body}`);
+		}
+	}
+	return sections;
+}
+
+// ---------------------------------------------------------------------------
 // Shared files (~/.pi/context/)
 // ---------------------------------------------------------------------------
 function sharedDir() {
@@ -161,39 +197,4 @@ export function briefingBlock(cwd: string) {
 	);
 	return parts.join("\n");
 }
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function safeJson(path: string): Record<string, unknown> | null {
-	try {
-		return JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		return null;
-	}
-}
-function readDirNames(dir: string) {
-	return readdirSync(dir).filter((e) => {
-		try {
-			return statSync(join(dir, e)).isDirectory();
-		} catch {
-			return false;
-		}
-	});
-}
-function extractSections(text: string, headings: string[]) {
-	const sections = [];
-	for (const h of headings) {
-		const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		const re = new RegExp(`##\\s+${escaped}\\b[^#]*`, "i");
-		const m = text.match(re);
-		if (m) {
-			const start = m.index! + m[0].length;
-			const nextHead = text.indexOf("\n#", start);
-			const end = nextHead >= 0 ? nextHead : text.length;
-			const body = text.slice(start, end).trim();
-			if (body) sections.push(`## ${h}\n${body}`);
-		}
-	}
-	return sections;
-}
-//# sourceMappingURL=context.js.map
+
