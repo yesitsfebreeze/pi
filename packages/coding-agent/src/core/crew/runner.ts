@@ -421,8 +421,8 @@ function spawnRun(run: CrewRun, spec: CrewSpec): void {
 		env: {
 			...process.env,
 			PI_SCOPES: [run.handle, ...(spec.scopes ?? [])].join(","),
-			...(existsSync(join(spec.repo, ".pi", "gantt"))
-				? { PI_WRITE_SCOPE_EXTRA: join(spec.repo, ".pi", "gantt") }
+			...(spec.profile.scope?.length
+				? { PI_WRITE_SCOPE: spec.profile.scope.join(":") }
 				: {}),
 			PI_DOING: `crew ${run.agent}: ${run.task.split("\n")[0].slice(0, 120)}`,
 			CREW_HANDLE: run.handle,

@@ -21,7 +21,7 @@ import {
 	stripBom,
 } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { checkWriteScope, resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -100,6 +100,8 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
+	/** Allowed write path prefixes. When set, edits outside these prefixes are blocked. */
+	writeScope?: string[];
 }
 
 function prepareEditArguments(input: unknown): EditToolInput {
@@ -350,6 +352,19 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+
+				// Write scope: block edits outside allowed prefixes
+				if (options?.writeScope) {
+					const blocked = checkWriteScope(absolutePath, options.writeScope);
+					if (blocked) {
+						throw new Error(
+							`Edit blocked: ${path} is outside the allowed write scope. ` +
+								`Allowed prefix(es): ${options.writeScope.join(", ")}. ` +
+								`Use writeScope setting to adjust.`,
+						);
+					}
+				}
+
 				await ops.writeFile(absolutePath, finalContent);
 				throwIfAborted();
 

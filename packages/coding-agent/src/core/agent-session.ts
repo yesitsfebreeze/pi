@@ -1041,11 +1041,13 @@ export class AgentSession {
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const loadedRecipes = this._resourceLoader.getRecipes().recipes;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
+			recipes: loadedRecipes,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -2561,6 +2563,7 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const writeScope = process.env.PI_WRITE_SCOPE?.split(":").filter(Boolean) ?? undefined;
 		const baseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -2571,6 +2574,8 @@ export class AgentSession {
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					write: writeScope ? { writeScope } : undefined,
+					edit: writeScope ? { writeScope } : undefined,
 				});
 
 		this._baseToolDefinitions = new Map(
