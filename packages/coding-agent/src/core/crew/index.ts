@@ -25,6 +25,10 @@ import {
 	stop,
 	stopAll,
 } from "./runner.ts";
+import {
+	type DiscoveryTask,
+	planDiscovery,
+} from "./discovery.ts";
 import type { CrewRun } from "./types.ts";
 import { runChainSync, runParallelSync, runSingleSync } from "./sync.ts";
 import type { CrewProfile } from "./types.ts";
@@ -216,6 +220,75 @@ export function createCrewExtension(): {
 				}));
 			}
 
+			function doDiscover(): string {
+				const tasks = planDiscovery(cwd);
+				if (tasks.length === 0) {
+					return "No codebase regions found (no top-level dirs with src/).";
+				}
+				const stale = tasks.filter((t) => t.needsDiscovery);
+				if (stale.length === 0) {
+					return [
+						`Discovery map is current (${tasks.length} regions, all at HEAD).`,
+						"",
+						"Regions:",
+						...tasks.map((t) => `  ${t.node.id} — ${t.reason}`),
+					].join("\n");
+				}
+				const handles: string[] = [];
+				for (const task of stale) {
+					const scoutTask = [
+						"## Scout survey",
+						"",
+						`Region: ${task.node.id} (${task.node.label})`,
+						`Globs: ${task.node.globs.join(", ")}`,
+						task.existingWatermark
+							? `Changed since: ${task.existingWatermark}`
+							: "First survey — no previous watermark",
+						"",
+						"Survey this codebase region. Record non-obvious facts into a new file:",
+						`${cwd}/.pi/context/memory/${task.node.id}.md`,
+						"",
+						"Instructions:",
+						"1. Read the source files under the globs above.",
+						"2. Record ONLY non-obvious facts — gotchas, surprising couplings, why-decisions.",
+						"3. Do NOT summarize file listings or document what code does line by line.",
+						"4. Keep it to ~15 lines. One fact per line, each with a one-line explanation.",
+						"5. Use markdown: `## Region-name`, then bullet points.",
+						"6. When done, run this to update the map:",
+						`   crew discovery update-node ${task.node.id} memory/${task.node.id}.md`,
+						"",
+						"You have write/edit tools. Use them to create the memory file. Only write",
+						"the memory file — do not modify any source code.",
+					].join("\n");
+					const { run, error } = start({
+						agent: "worker",
+						task: scoutTask,
+						cwd,
+						repo,
+						profile: fallback,
+						parentAddr: myAddr(),
+						scopes: myScopes(),
+						depth,
+					});
+					if (!error && run) {
+						handles.push(run.handle);
+					}
+				}
+				return [
+					`Discovery dispatched: ${handles.length}/${stale.length} scouts launched.`,
+					"",
+					`Current regions: ${tasks.filter((t) => !t.needsDiscovery).length}`,
+					`Stale regions: ${stale.length}`,
+					"",
+					handles.length
+						? `Handles: ${handles.join(", ")}`
+						: "No scouts launched — check the crew logs.",
+					"",
+					"Each scout writes its memory file and the map updates automatically.",
+					"Check progress: crew status",
+				].join("\n");
+			}
+
 			// ── lifecycle ──────────────────────────────────────────────────
 			pi.on("session_start", (_e: unknown, ctx: ExtensionContext) => {
 				ui = ctx?.ui;
@@ -265,6 +338,7 @@ export function createCrewExtension(): {
 						Type.Literal("agents"),
 						Type.Literal("clear"),
 						Type.Literal("sync"),
+						Type.Literal("discover"),
 					]),
 					task: Type.Optional(
 						Type.String({
@@ -351,6 +425,9 @@ export function createCrewExtension(): {
 						if (!sp.agent || !sp.task)
 							return out("sync needs (agent + task), tasks array, or chain array");
 						return doSync(sp, signal);
+					}
+					if (a === "discover") {
+						return out(doDiscover());
 					}
 					if (a === "start") {
 						if (!params.task) return out("start needs a task");
