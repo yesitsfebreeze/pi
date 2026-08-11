@@ -65,7 +65,7 @@ import {
 	computeCacheWaste,
 	detectCacheMiss,
 } from "../../core/cache-stats.ts";
-import { type HotReloadEvent, startHotReload } from "../../core/dev-hot-reload.ts";
+// import { type HotReloadEvent, startHotReload } from "../../core/dev-hot-reload.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -79,7 +79,7 @@ import type {
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
+
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
@@ -120,16 +120,16 @@ import { CustomEditor } from "./components/custom-editor.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DaxnutsComponent } from "./components/daxnuts.ts";
+import { DeltaLineComponent } from "./components/delta-line.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { FooterComponent, formatTokens } from "./components/footer.ts";
+import { formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
-import { MessageStatusComponent } from "./components/message-status.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
 	type AuthSelectorProvider,
@@ -148,6 +148,7 @@ import {
 	type StatusIndicator,
 	WorkingStatusIndicator,
 } from "./components/status-indicator.ts";
+import { StatusLineComponent } from "./components/status-line.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
@@ -161,6 +162,7 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
+	InteractiveThemeController,
 	onThemeChange,
 	setRegisteredThemes,
 	stopThemeWatcher,
@@ -168,7 +170,6 @@ import {
 	type ThemeColor,
 	theme,
 } from "./theme/theme.ts";
-import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -408,9 +409,8 @@ export class InteractiveMode {
 	private editorContainer: Container;
 	private activeSelectorToken?: object;
 	private activeSelectorDispose?: () => void;
-	private footer: FooterComponent;
-	private footerContainer: Container;
-	private footerDataProvider: FooterDataProvider;
+	private statusLine: StatusLineComponent;
+	private statusLineContainer: Container;
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
 	private keybindings: KeybindingsManager;
 	private version: string;
@@ -500,9 +500,6 @@ export class InteractiveMode {
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
 
-	// Custom footer from extension (undefined = use built-in footer)
-	private customFooter: (Component & { dispose?(): void }) | undefined = undefined;
-
 	// Header container that holds the built-in or custom header
 	private headerContainer: Container;
 
@@ -518,7 +515,7 @@ export class InteractiveMode {
 	};
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
-	private hotReloadStop: (() => void) | undefined;
+	// private hotReloadStop: (() => void) | undefined;
 
 	// Convenience accessors
 	private get session(): AgentSession {
@@ -576,11 +573,9 @@ export class InteractiveMode {
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
-		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
-		this.footer = new FooterComponent(this.session, this.footerDataProvider);
-		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
-		this.footerContainer = new Container();
-		this.footerContainer.addChild(this.footer);
+		this.statusLine = new StatusLineComponent(() => this.getStatusLineData());
+		this.statusLineContainer = new Container();
+		this.statusLineContainer.addChild(this.statusLine);
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -885,18 +880,21 @@ export class InteractiveMode {
 		const dock = new TuiLayouts.VStack([
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
+			{ component: this.statusLineContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 		]);
+		const topComponent = this.transcriptScrollView;
 		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
-			{ component: this.transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: topComponent, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 		]);
 		this.mountInteractiveTui(this.renderer, [
 			this.documentContainer,
 			this.pendingMessagesContainer,
 			this.statusContainer,
+			this.statusLineContainer,
 			this.widgetContainerAbove,
 			this.editorContainer,
 			this.widgetContainerBelow,
@@ -987,26 +985,11 @@ export class InteractiveMode {
 			this.ui.requestRender();
 		});
 
-		// Set up git branch watcher (uses provider instead of footer)
-		this.footerDataProvider.onBranchChange(() => {
-			this.ui.requestRender();
-		});
-
-		// Initialize available provider count for footer display
+		// Initialize available provider count for statusline display
 		await this.updateAvailableProviderCount();
 
-		// Start hot reload watcher
-		this.hotReloadStop = startHotReload({
-			agentDir: getAgentDir(),
-			cwd: this.sessionManager.getCwd(),
-			sessionFilePath: this.sessionManager.getSessionFile() ?? "",
-			reload: () => this.handleReloadCommand(),
-			onEvent: (event: HotReloadEvent) => {
-				if (event.type === "session-data-changed") {
-					this.showWarning("Session data changed externally. Restart pi to load changes.");
-				}
-			},
-		}).stop;
+		// Start hot reload watcher (disabled)
+		// this.hotReloadStop = startHotReload({ ... }).stop;
 	}
 
 	/**
@@ -1918,9 +1901,6 @@ export class InteractiveMode {
 	private applyRuntimeSettings(): void {
 		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
 		this.applyFullscreenScrollbarSetting();
-		this.footer.setSession(this.session);
-		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
-		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 		this.outputPad = this.settingsManager.getOutputPad();
 		this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
@@ -2058,9 +2038,8 @@ export class InteractiveMode {
 	/**
 	 * Set extension status text in the footer.
 	 */
-	private setExtensionStatus(key: string, text: string | undefined): void {
-		this.footerDataProvider.setExtensionStatus(key, text);
-		this.ui.requestRender();
+	private setExtensionStatus(_key: string, _text: string | undefined): void {
+		// no-op: footer slot removed
 	}
 
 	private showStatusIndicator(indicator: StatusIndicator): void {
@@ -2192,11 +2171,8 @@ export class InteractiveMode {
 		}
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
-		this.setExtensionFooter(undefined);
 		this.setExtensionHeader(undefined);
 		this.clearExtensionWidgets();
-		this.footerDataProvider.clearExtensionStatuses();
-		this.footer.invalidate();
 		this.autocompleteProviderWrappers = [];
 		this.setCustomEditorComponent(undefined);
 		this.setupAutocompleteProvider();
@@ -2249,32 +2225,7 @@ export class InteractiveMode {
 		}
 	}
 
-	/**
-	 * Set a custom footer component, or restore the built-in footer.
-	 */
-	private setExtensionFooter(
-		factory:
-			| ((tui: TUI, thm: Theme, footerData: ReadonlyFooterDataProvider) => Component & { dispose?(): void })
-			| undefined,
-	): void {
-		// Dispose existing custom footer
-		if (this.customFooter?.dispose) {
-			this.customFooter.dispose();
-		}
-
-		this.footerContainer.clear();
-		if (factory) {
-			// Create and add custom footer, passing the data provider
-			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.footerContainer.addChild(this.customFooter);
-		} else {
-			// Restore built-in footer
-			this.customFooter = undefined;
-			this.footerContainer.addChild(this.footer);
-		}
-
-		this.ui.requestRender();
-	}
+	// setExtensionFooter removed: footer slot is no longer used.
 
 	/**
 	 * Set a custom header component, or restore the built-in header.
@@ -2379,7 +2330,7 @@ export class InteractiveMode {
 			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
 			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
 			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-			setFooter: (factory) => this.setExtensionFooter(factory),
+			setFooter: () => {}, // no-op: footer slot removed
 			setHeader: (factory) => this.setExtensionHeader(factory),
 			setTitle: (title) => this.ui.terminal.setTitle(title),
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -3108,8 +3059,6 @@ export class InteractiveMode {
 			await this.init();
 		}
 
-		this.footer.invalidate();
-
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
@@ -3150,12 +3099,10 @@ export class InteractiveMode {
 
 			case "session_info_changed":
 				this.updateTerminalTitle();
-				this.footer.invalidate();
 				this.ui.requestRender();
 				break;
 
 			case "thinking_level_changed":
-				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				break;
 
@@ -3255,10 +3202,10 @@ export class InteractiveMode {
 						}
 						this.pendingTools.clear();
 
-						// Show error status line with partial token/cost data if available.
+						// Show error delta line with partial token/cost data if available.
 						if (this.streamingMessage.usage) {
 							this.chatContainer.addChild(
-								new MessageStatusComponent({
+								new DeltaLineComponent({
 									usage: this.streamingMessage.usage,
 									durationMs,
 									modelName,
@@ -3279,7 +3226,7 @@ export class InteractiveMode {
 						// Append per-response status below the assistant message.
 						if (this.streamingMessage.usage) {
 							this.chatContainer.addChild(
-								new MessageStatusComponent({
+								new DeltaLineComponent({
 									usage: this.streamingMessage.usage,
 									durationMs,
 									modelName,
@@ -3401,7 +3348,6 @@ export class InteractiveMode {
 							new Date().toISOString(),
 						),
 					);
-					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
 						this.showError(event.errorMessage);
@@ -3636,10 +3582,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private renderSessionItems(
-		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	private renderSessionItems(items: readonly RenderSessionItem[], options: { populateHistory?: boolean } = {}): void {
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache-miss notices are not persisted; re-derive them from the full entry
@@ -3647,11 +3590,6 @@ export class InteractiveMode {
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
 			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
 			: new Map<AssistantMessage, CacheMiss>();
-
-		if (options.updateFooter) {
-			this.footer.invalidate();
-			this.updateEditorBorderColor();
-		}
 
 		for (const item of items) {
 			if (isCustomSessionEntry(item)) {
@@ -3724,13 +3662,9 @@ export class InteractiveMode {
 	/**
 	 * Render session entries to chat. Used for initial load and rebuild after compaction.
 	 * @param entries Compaction-aware session entries to render
-	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
-	private renderSessionEntries(
-		entries: SessionEntry[],
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	private renderSessionEntries(entries: SessionEntry[], options: { populateHistory?: boolean } = {}): void {
 		const items = entries.flatMap((entry): RenderSessionItem[] => {
 			if (entry.type === "custom") {
 				return [entry];
@@ -3772,7 +3706,6 @@ export class InteractiveMode {
 	renderInitialMessages(): void {
 		const entries = this.sessionManager.buildContextEntries();
 		this.renderSessionEntries(entries, {
-			updateFooter: true,
 			populateHistory: true,
 		});
 		this.renderProjectTrustWarningIfNeeded();
@@ -4079,7 +4012,6 @@ export class InteractiveMode {
 		if (newLevel === undefined) {
 			this.showStatus("Current model does not support thinking");
 		} else {
-			this.footer.invalidate();
 			this.updateEditorBorderColor();
 			this.showStatus(`Thinking level: ${newLevel}`);
 		}
@@ -4092,7 +4024,6 @@ export class InteractiveMode {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
 			} else {
-				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
@@ -4495,7 +4426,6 @@ export class InteractiveMode {
 				{
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
-						this.footer.setAutoCompactEnabled(enabled);
 					},
 					onShowImagesChange: (enabled) => {
 						this.settingsManager.setShowImages(enabled);
@@ -4540,7 +4470,6 @@ export class InteractiveMode {
 					},
 					onThinkingLevelChange: (level) => {
 						this.session.setThinkingLevel(level);
-						this.footer.invalidate();
 						this.updateEditorBorderColor();
 					},
 					onThemeChange: (themeSetting) => {
@@ -4675,7 +4604,6 @@ export class InteractiveMode {
 		if (model) {
 			try {
 				await this.session.setModel(model);
-				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
@@ -4723,14 +4651,46 @@ export class InteractiveMode {
 		return findExactModelReferenceMatch(searchTerm, [...this.session.modelRuntime.getAvailableSnapshot()]);
 	}
 
-	/** Update the footer's available provider count from the current snapshot without refreshing catalogs. */
+	/** Update the available provider count (statusline uses this for model display). */
 	private updateAvailableProviderCount(): void {
-		const models =
-			this.session.scopedModels.length > 0
-				? this.session.scopedModels.map((scoped) => scoped.model)
-				: this.session.modelRuntime.getAvailableSnapshot();
-		const uniqueProviders = new Set(models.map((model) => model.provider));
-		this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
+		// no-op: footer slot removed
+	}
+
+	/** Build live data for the NuShell-style statusline. */
+	private getStatusLineData(): import("./components/status-line.ts").StatusLineData {
+		const state = this.session.state;
+		const contextUsage = this.session.getContextUsage();
+		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
+		const contextPercent = contextUsage?.percent ?? null;
+
+		// Compute cumulative token totals from all entries
+		let inputTokens = 0;
+		let outputTokens = 0;
+		for (const entry of this.sessionManager.getEntries()) {
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				const u = entry.message.usage;
+				inputTokens += (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
+				outputTokens += u?.output ?? 0;
+			} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
+				inputTokens += entry.message.usage.input ?? 0;
+				outputTokens += entry.message.usage.output ?? 0;
+			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
+				inputTokens += entry.usage.input ?? 0;
+				outputTokens += entry.usage.output ?? 0;
+			}
+		}
+
+		return {
+			cwd: this.sessionManager.getCwd(),
+			gitBranch: undefined, // TODO: add git branch support
+			modelName: state.model?.id ?? "no-model",
+			contextPercent,
+			contextWindow,
+			inputTokens,
+			outputTokens,
+			sessionCost: this.cumulativeSessionCost,
+			autoCompact: this.session.autoCompactionEnabled,
+		};
 	}
 
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
@@ -4825,7 +4785,6 @@ export class InteractiveMode {
 				async (model) => {
 					try {
 						await this.session.setModel(model);
-						this.footer.invalidate();
 						this.updateEditorBorderColor();
 						done();
 						this.showStatus(`Model: ${model.id}`);
@@ -5529,7 +5488,6 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
-		this.footer.invalidate();
 		this.updateEditorBorderColor();
 		if (selectedModel) {
 			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
@@ -5555,7 +5513,6 @@ export class InteractiveMode {
 					this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
 				}
 				this.updateAvailableProviderCount();
-				this.footer.invalidate();
 				this.ui.requestRender();
 			})
 			.catch((error: unknown) => {
@@ -6464,8 +6421,7 @@ export class InteractiveMode {
 		this.clearStatusIndicator();
 		this.themeController.disableAutoSync();
 		this.clearExtensionTerminalInputListeners();
-		this.footer.dispose();
-		this.footerDataProvider.dispose();
+
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
@@ -6474,6 +6430,6 @@ export class InteractiveMode {
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();
-		this.hotReloadStop?.();
+		// this.hotReloadStop?.();
 	}
 }
