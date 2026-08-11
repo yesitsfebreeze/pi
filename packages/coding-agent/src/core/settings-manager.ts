@@ -136,6 +136,9 @@ export interface Settings {
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+	/** Restrict file writes to specific directories. Default: git worktree root when inside a repo, unrestricted otherwise.
+	 *  Set to true (default), false to disable, or an array of absolute paths to allow. */
+	writeScope?: boolean | string[];
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -1150,6 +1153,11 @@ export class SettingsManager {
 	getFullscreenScrollbar(): ScrollViewScrollbar {
 		const mode = this.settings.fullscreenScrollbar;
 		return mode === "always" || mode === "hidden" ? mode : "auto";
+	}
+
+	/** Get the write scope configuration. Returns true for default git-root behavior. */
+	getWriteScope(): boolean | string[] {
+		return this.settings.writeScope ?? true;
 	}
 
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {

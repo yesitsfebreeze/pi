@@ -65,6 +65,7 @@ import {
 	computeCacheWaste,
 	detectCacheMiss,
 } from "../../core/cache-stats.ts";
+import { type HotReloadEvent, startHotReload } from "../../core/dev-hot-reload.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -513,6 +514,7 @@ export class InteractiveMode {
 	};
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
+	private hotReloadStop: (() => void) | undefined;
 
 	// Convenience accessors
 	private get session(): AgentSession {
@@ -990,6 +992,19 @@ export class InteractiveMode {
 
 		// Initialize available provider count for footer display
 		await this.updateAvailableProviderCount();
+
+		// Start hot reload watcher
+		this.hotReloadStop = startHotReload({
+			agentDir: getAgentDir(),
+			cwd: this.sessionManager.getCwd(),
+			sessionFilePath: this.sessionManager.getSessionFile() ?? "",
+			reload: () => this.handleReloadCommand(),
+			onEvent: (event: HotReloadEvent) => {
+				if (event.type === "session-data-changed") {
+					this.showWarning("Session data changed externally. Restart pi to load changes.");
+				}
+			},
+		}).stop;
 	}
 
 	/**
@@ -3001,6 +3016,27 @@ export class InteractiveMode {
 			}
 			if (text === "/quit") {
 				this.editor.setText("");
+				await this.shutdown();
+				return;
+			}
+			if (text === ":q") {
+				this.editor.setText("");
+				if (this.session.isStreaming || this.session.isCompacting) {
+					this.shutdownRequested = true;
+					this.showStatus("Quitting when agent finishes...");
+				} else {
+					await this.shutdown();
+				}
+				return;
+			}
+			if (text === ":q!") {
+				this.editor.setText("");
+				if (this.session.isStreaming) {
+					await this.session.abort();
+				}
+				if (this.session.isCompacting) {
+					this.session.abortCompaction();
+				}
 				await this.shutdown();
 				return;
 			}
@@ -6398,5 +6434,6 @@ export class InteractiveMode {
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();
+		this.hotReloadStop?.();
 	}
 }

@@ -4,14 +4,7 @@ import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
-import {
-	cjkBreakRegex,
-	getGraphemeSegmenter,
-	getWordSegmenter,
-	isWhitespaceChar,
-	sliceByColumn,
-	visibleWidth,
-} from "../utils.ts";
+import { cjkBreakRegex, getGraphemeSegmenter, getWordSegmenter, isWhitespaceChar, visibleWidth } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
 
@@ -256,17 +249,6 @@ function buildDebouncePattern(triggerCharacters: string[]): RegExp {
 	return new RegExp(`(?:^|[ \\t])(?:@(?:"[^"]*|[^\\s]*)|[${escapedWithoutAt.join("")}][^\\s]*)$`);
 }
 
-function createScrollBorder(direction: "↑" | "↓", hiddenLineCount: number, width: number): string {
-	const availableWidth = Math.max(0, width);
-	const indicator = `─── ${direction} ${hiddenLineCount} more `;
-	const remaining = availableWidth - visibleWidth(indicator);
-	if (remaining >= 0) return indicator + "─".repeat(remaining);
-
-	const ellipsis = "...".slice(0, availableWidth);
-	const indicatorWidth = availableWidth - visibleWidth(ellipsis);
-	return sliceByColumn(indicator, 0, indicatorWidth, true) + ellipsis;
-}
-
 export class Editor implements Component, Focusable {
 	private state: EditorState = {
 		lines: [""],
@@ -491,8 +473,6 @@ export class Editor implements Component, Focusable {
 		// Store for cursor navigation (must match wrapping width)
 		this.lastWidth = layoutWidth;
 
-		const horizontal = this.borderColor("─");
-
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
 
@@ -521,14 +501,6 @@ export class Editor implements Component, Focusable {
 		const result: string[] = [];
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
-
-		// Render top border (with scroll indicator if scrolled down)
-		if (this.scrollOffset > 0) {
-			const border = createScrollBorder("↑", this.scrollOffset, width);
-			result.push(this.borderColor(border));
-		} else {
-			result.push(horizontal.repeat(width));
-		}
 
 		// Render each visible layout line
 		// Emit hardware cursor marker when focused so TUI can position the
@@ -574,17 +546,8 @@ export class Editor implements Component, Focusable {
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
-			// Render the line (no side borders, just horizontal lines above and below)
+			// Render the line
 			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
-		}
-
-		// Render bottom border (with scroll indicator if more content below)
-		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
-		if (linesBelow > 0) {
-			const border = createScrollBorder("↓", linesBelow, width);
-			result.push(this.borderColor(border));
-		} else {
-			result.push(horizontal.repeat(width));
 		}
 
 		// Add autocomplete list if active

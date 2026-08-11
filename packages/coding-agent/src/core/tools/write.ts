@@ -8,7 +8,7 @@ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/inte
 import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { checkWriteScope, resolveToCwd } from "./path-utils.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -43,6 +43,8 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
+	/** Allowed write path prefixes. When set, writes outside these prefixes are blocked. */
+	writeScope?: string[];
 }
 
 type WriteHighlightCache = {
@@ -206,6 +208,18 @@ export function createWriteToolDefinition(
 			_ctx?,
 		) {
 			const absolutePath = resolveToCwd(path, cwd);
+
+			// Write scope: block writes outside allowed prefixes
+			if (options?.writeScope) {
+				const blocked = checkWriteScope(absolutePath, options.writeScope);
+				if (blocked) {
+					throw new Error(
+						`Write blocked: ${path} is outside the allowed write scope. ` +
+						`Allowed prefix(es): ${options.writeScope.join(", ")}. ` +
+						`Use writeScope setting to adjust.`,
+					);
+				}
+			}
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
