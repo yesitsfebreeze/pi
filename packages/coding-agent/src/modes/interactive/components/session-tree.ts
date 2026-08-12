@@ -8,8 +8,8 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { type LedgerEntry, loadLedger } from "../../../core/session-ledger.ts";
+import type { CrewRun } from "../../../core/crew/types.ts";
 import {
-	type CrewRun,
 	GLYPH,
 	live as crewLive,
 } from "../../../core/crew/runner.ts";
