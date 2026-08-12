@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Fixed SQLite branch queries to apply filters, cursors, and limits in SQL; bounded log reads; and added covering indexes for session, record, branch, and fact queries ([#7727](https://github.com/earendil-works/pi/pull/7727) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Fixed SQLite branch queries to apply filters, cursors, and limits in SQL; bounded log reads; and added covering indexes for session, record, branch, and fact queries ([#7727](https://github.com/yesitsfebreeze/pi/pull/7727) by [@cristinaponcela](https://github.com/cristinaponcela)).
 
 ## [0.84.0] - 2026-08-06
 
@@ -25,7 +25,7 @@
 
 ### Fixed
 
-- Fixed SQLite session listings to avoid acquiring writer claims and include current session names, allowing inventory reads while sessions have active writers ([#7655](https://github.com/earendil-works/pi/pull/7655)).
+- Fixed SQLite session listings to avoid acquiring writer claims and include current session names, allowing inventory reads while sessions have active writers ([#7655](https://github.com/yesitsfebreeze/pi/pull/7655)).
 
 ## [0.83.0] - 2026-07-29
 
@@ -39,4 +39,4 @@
 
 ### Added
 
-- Added a Node.js SQLite storage backend for agent harness sessions, including migrations and materialized session views ([#6594](https://github.com/earendil-works/pi/pull/6594) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Added a Node.js SQLite storage backend for agent harness sessions, including migrations and materialized session views ([#6594](https://github.com/yesitsfebreeze/pi/pull/6594) by [@cristinaponcela](https://github.com/cristinaponcela)).
