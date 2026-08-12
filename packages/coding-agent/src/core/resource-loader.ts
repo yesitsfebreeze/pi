@@ -42,6 +42,7 @@ export interface ResourceLoader {
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
+	getRecipes(): { recipes: Array<{ name: string; content: string }>; diagnostics: ResourceDiagnostic[] };
 	getSystemPrompt(): string | undefined;
 	getSystemPromptSource(): { path: string } | undefined;
 	getAppendSystemPrompt(): string[];
@@ -318,6 +319,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> } {
 		return { agentsFiles: this.agentsFiles };
+	}
+
+	getRecipes(): { recipes: Array<{ name: string; content: string }>; diagnostics: ResourceDiagnostic[] } {
+		return { recipes: [], diagnostics: [] };
 	}
 
 	getSystemPrompt(): string | undefined {
