@@ -89,8 +89,13 @@ import {
 	resolveModelScopeFromModels,
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
-import { connectNvim, discoverNvim, nvimToolOps, createNvimToolDefinitions, type NvimConnection } from "../../core/nvim.ts";
-import { createToolDefinition, type ToolsOptions } from "../../core/tools/index.ts";
+import {
+	connectNvim,
+	createNvimToolDefinitions,
+	discoverNvim,
+	type NvimConnection,
+	nvimToolOps,
+} from "../../core/nvim.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -99,6 +104,7 @@ import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import { createToolDefinition, type ToolsOptions } from "../../core/tools/index.ts";
 
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
@@ -3423,11 +3429,7 @@ export class InteractiveMode {
 			this.chatContainer.clear();
 			this.rebuildChatFromMessages();
 			this.addMessageToChat(
-				createCompactionSummaryMessage(
-					event.result.summary,
-					event.result.tokensBefore,
-					new Date().toISOString(),
-				),
+				createCompactionSummaryMessage(event.result.summary, event.result.tokensBefore, new Date().toISOString()),
 			);
 		} else if (event.errorMessage) {
 			if (event.reason === "manual") {
@@ -3447,9 +3449,7 @@ export class InteractiveMode {
 		this.defaultEditor.onEscape = () => {
 			this.session.abortRetry();
 		};
-		this.showStatusIndicator(
-			new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
-		);
+		this.showStatusIndicator(new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs));
 		this.ui.requestRender();
 	}
 
@@ -3471,9 +3471,7 @@ export class InteractiveMode {
 		event: Extract<AgentSessionEvent, { type: "summarization_retry_scheduled" }>,
 	): void {
 		this.showError(event.errorMessage);
-		this.showStatusIndicator(
-			new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
-		);
+		this.showStatusIndicator(new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs));
 		this.ui.requestRender();
 	}
 
@@ -4795,26 +4793,31 @@ export class InteractiveMode {
 
 			// 4. Notify the model that nvim is connected with full tool list.
 			const nativeToolNames = [
-				"lsp_diagnostics", "lsp_references", "lsp_definition", "lsp_hover",
-				"ts_query", "buffers", "nvim_config", "nvim_search", "nvim_find_files",
+				"lsp_diagnostics",
+				"lsp_references",
+				"lsp_definition",
+				"lsp_hover",
+				"ts_query",
+				"buffers",
+				"nvim_config",
+				"nvim_search",
+				"nvim_find_files",
 			];
 			await this.session.prompt(
 				`nvim connected. All file operations (read, write, edit, grep, find, ls) ` +
-				`now go through nvim so you see exactly what the user sees. ` +
-				`Additional nvim-native tools: ${nativeToolNames.join(", ")}. ` +
-				`Use nvim_exec/nvim_lua to control nvim directly. ` +
-				`Use nvim_config to inspect the nvim setup. ` +
-				`Use nvim_search/nvim_find_files for fuzzy/project search via telescope/fzf-lua/vimgrep.`,
+					`now go through nvim so you see exactly what the user sees. ` +
+					`Additional nvim-native tools: ${nativeToolNames.join(", ")}. ` +
+					`Use nvim_exec/nvim_lua to control nvim directly. ` +
+					`Use nvim_config to inspect the nvim setup. ` +
+					`Use nvim_search/nvim_find_files for fuzzy/project search via telescope/fzf-lua/vimgrep.`,
 			);
 
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(new DynamicBorder());
 			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "nvim connected")), 1, 0));
-			this.chatContainer.addChild(new Text(
-				`Socket: ${socketPath} | All file tools forwarded | LSP + treesitter + search tools active`,
-				1,
-				0,
-			));
+			this.chatContainer.addChild(
+				new Text(`Socket: ${socketPath} | All file tools forwarded | LSP + treesitter + search tools active`, 1, 0),
+			);
 			this.ui.requestRender();
 			this.showStatus("");
 		} catch (e) {

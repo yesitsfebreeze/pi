@@ -7,12 +7,9 @@ import {
 	type TreeNode,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { type LedgerEntry, loadLedger } from "../../../core/session-ledger.ts";
+import { live as crewLive, GLYPH } from "../../../core/crew/runner.ts";
 import type { CrewRun } from "../../../core/crew/types.ts";
-import {
-	GLYPH,
-	live as crewLive,
-} from "../../../core/crew/runner.ts";
+import { type LedgerEntry, loadLedger } from "../../../core/session-ledger.ts";
 import { theme as appTheme } from "../theme/theme.ts";
 
 /** Extra data attached to tree nodes for rendering and navigation */

@@ -13,7 +13,6 @@ import type { GrepOperations } from "../tools/grep.js";
 import type { LsOperations } from "../tools/ls.js";
 import type { ReadOperations } from "../tools/read.js";
 import type { WriteOperations } from "../tools/write.js";
-import type { NvimSocketClient } from "./nvim-socket-client.js";
 import {
 	createNvimBashOps,
 	createNvimEditOps,
@@ -23,6 +22,7 @@ import {
 	createNvimReadOps,
 	createNvimWriteOps,
 } from "./nvim-operations.js";
+import type { NvimSocketClient } from "./nvim-socket-client.js";
 
 type ClientGetter = () => NvimSocketClient | undefined;
 

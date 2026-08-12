@@ -15,30 +15,27 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { ToolDefinition } from "./extensions/types.js";
-import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
-import type { NvimBufferEdit, NvimBufferState } from "./nvim/nvim-transport-types.js";
-import { NvimSocketClient } from "./nvim/nvim-socket-client.js";
 import { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
-import {
-	createNvimAgentTools,
-	createNvimToolDefinitions,
-} from "./nvim/nvim-tools.js";
+import { NvimSocketClient } from "./nvim/nvim-socket-client.js";
+import { createNvimAgentTools, createNvimToolDefinitions } from "./nvim/nvim-tools.js";
+import type { NvimBufferEdit, NvimBufferState } from "./nvim/nvim-transport-types.js";
+import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
 
+export { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
 // Re-export for consumers
 export { NvimSocketClient } from "./nvim/nvim-socket-client.js";
-export { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
 export {
-	createNvimAgentTools,
-	createNvimToolDefinitions,
-	createLspDiagnosticsTool,
-	createLspReferencesTool,
-	createLspDefinitionTool,
-	createLspHoverTool,
-	createTsQueryTool,
 	createBuffersTool,
+	createLspDefinitionTool,
+	createLspDiagnosticsTool,
+	createLspHoverTool,
+	createLspReferencesTool,
+	createNvimAgentTools,
 	createNvimConfigTool,
-	createNvimSearchTool,
 	createNvimFindFilesTool,
+	createNvimSearchTool,
+	createNvimToolDefinitions,
+	createTsQueryTool,
 } from "./nvim/nvim-tools.js";
 export type { NvimBufferState, NvimBufferEdit };
 
@@ -65,11 +62,7 @@ export function createNvimExec(socketPath: string): NvimExec {
 				{ timeout: 10000 },
 				(err, stdout, stderr) => {
 					if (err) {
-						reject(
-							new Error(
-								`nvim RPC failed: ${stderr?.trim() || err.message}`,
-							),
-						);
+						reject(new Error(`nvim RPC failed: ${stderr?.trim() || err.message}`));
 						return;
 					}
 					resolve(stdout.trim());
@@ -95,9 +88,7 @@ export interface NvimConnection {
  * Connect to nvim at the given socket path.
  * Returns the full connection object with client, exec, and operations.
  */
-export async function connectNvim(
-	socketPath: string,
-): Promise<NvimConnection> {
+export async function connectNvim(socketPath: string): Promise<NvimConnection> {
 	let client: NvimSocketClient;
 	try {
 		client = new NvimSocketClient({ socketPath });
@@ -269,12 +260,7 @@ return table.concat(parts, "\\n")
 // ─── Basic nvim tools (nvim_exec, nvim_lua) ────────────────────────────────
 
 const renderCall = () => new Text("", 0, 0);
-const renderResult = (result: any) =>
-	new Text(
-		result?.content?.map((c: any) => c.text ?? "").join("\n") ?? "",
-		0,
-		0,
-	);
+const renderResult = (result: any) => new Text(result?.content?.map((c: any) => c.text ?? "").join("\n") ?? "", 0, 0);
 
 function basicNvimToolDefs(exec: NvimExec): ToolDefinition[] {
 	return [
@@ -332,10 +318,7 @@ export function nvimTools(exec: NvimExec): AgentTool[] {
  * Get all nvim-native tools (LSP, treesitter, config, search, find files).
  * These require the NvimSocketClient (which works with raw nvim RPC or the pi plugin).
  */
-export function nvimNativeAgentTools(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool[] {
+export function nvimNativeAgentTools(cwd: string, client: NvimSocketClient): AgentTool[] {
 	return createNvimAgentTools(cwd, client);
 }
 

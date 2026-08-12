@@ -88,9 +88,7 @@ export function createNvimEditOps(getClient: ClientGetter): EditOperations {
 				if (state) {
 					const currentLines = state.content.split("\n");
 					// Replace entire buffer
-					await client.applyEdits(absolutePath, [
-						{ startLine: 0, endLine: currentLines.length, newLines: lines },
-					]);
+					await client.applyEdits(absolutePath, [{ startLine: 0, endLine: currentLines.length, newLines: lines }]);
 				}
 			}
 			// Always also write to disk so the edit tool's contract is fulfilled
@@ -151,7 +149,9 @@ export function createNvimBashOps(getClient: ClientGetter): BashOperations {
 		exec: async (
 			command: string,
 			cwd: string,
-			{ onData }: { onData: (chunk: Buffer) => void; signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv },
+			{
+				onData,
+			}: { onData: (chunk: Buffer) => void; signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv },
 		): Promise<{ exitCode: number | null }> => {
 			const client = getClient();
 			if (client) {

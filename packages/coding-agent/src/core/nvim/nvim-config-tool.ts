@@ -16,15 +16,12 @@ import type { NvimKeymap, NvimLspServer } from "./nvim-transport-types.js";
 const nvimConfigSchema = Type.Object({
 	section: Type.Optional(
 		Type.String({
-			description:
-				"Section to query: keymaps, options, lsp, plugins, search_tools, or all. Default: all.",
+			description: "Section to query: keymaps, options, lsp, plugins, search_tools, or all. Default: all.",
 		}),
 	),
 });
 
-export function createNvimConfigTool(
-	client: NvimSocketClient,
-): ToolDefinition<typeof nvimConfigSchema> {
+export function createNvimConfigTool(client: NvimSocketClient): ToolDefinition<typeof nvimConfigSchema> {
 	return {
 		name: "nvim_config",
 		label: "nvim_config",

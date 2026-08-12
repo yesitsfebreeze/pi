@@ -11,8 +11,8 @@
  * `nvim_exec_lua`.
  */
 
-import { connect, Socket } from "node:net";
-import { createInterface, Interface } from "node:readline";
+import { connect, type Socket } from "node:net";
+import { createInterface, type Interface } from "node:readline";
 import type {
 	NvimBuffer,
 	NvimBufferEdit,
@@ -206,13 +206,8 @@ end
 	/** Get diagnostics for a buffer (or all buffers). */
 	async getDiagnostics(name?: string): Promise<NvimDiagnostic[]> {
 		try {
-			const bufnrArg = name
-				? `vim.fn.bufnr("${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")`
-				: "0";
-			const result = await this.call("nvim_exec_lua", [
-				`return vim.diagnostic.get(${bufnrArg})`,
-				[],
-			]);
+			const bufnrArg = name ? `vim.fn.bufnr("${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")` : "0";
+			const result = await this.call("nvim_exec_lua", [`return vim.diagnostic.get(${bufnrArg})`, []]);
 			return (result as NvimDiagnostic[]) ?? [];
 		} catch {
 			return [];
@@ -220,11 +215,7 @@ end
 	}
 
 	/** Get LSP references for position. */
-	async getLspReferences(
-		name: string,
-		lnum: number,
-		col: number,
-	): Promise<NvimLspLocation[]> {
+	async getLspReferences(name: string, lnum: number, col: number): Promise<NvimLspLocation[]> {
 		try {
 			const bufnr = await this.#getBufnr(name);
 			if (bufnr === null) return [];
@@ -251,11 +242,7 @@ return vim.lsp.buf_request_sync(${bufnr}, 'textDocument/references', params, 100
 	}
 
 	/** Get LSP definition for position. */
-	async getLspDefinition(
-		name: string,
-		lnum: number,
-		col: number,
-	): Promise<NvimLspLocation[]> {
+	async getLspDefinition(name: string, lnum: number, col: number): Promise<NvimLspLocation[]> {
 		try {
 			const bufnr = await this.#getBufnr(name);
 			if (bufnr === null) return [];
@@ -417,9 +404,7 @@ end
 
 	async #getBufnr(name: string): Promise<number | null> {
 		const escaped = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-		const bufnr = await this.call("nvim_exec_lua", [
-			`return vim.fn.bufnr("${escaped}")`,
-		]);
+		const bufnr = await this.call("nvim_exec_lua", [`return vim.fn.bufnr("${escaped}")`]);
 		const num = Number(bufnr);
 		return num === -1 ? null : num;
 	}

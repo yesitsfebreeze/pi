@@ -16,11 +16,7 @@ import type { NvimDiagnostic, NvimLspLocation } from "./nvim-transport-types.js"
 
 export { createNvimConfigAgentTool, createNvimConfigTool } from "./nvim-config-tool.js";
 
-function resolvePath(
-	path: string | undefined,
-	_cwd: string,
-	client: NvimSocketClient,
-): Promise<string> {
+function resolvePath(path: string | undefined, _cwd: string, client: NvimSocketClient): Promise<string> {
 	if (path) return Promise.resolve(path);
 	return client.getBufferState().then((b) => b?.path ?? "");
 }
@@ -39,10 +35,7 @@ function formatDiagnostics(diagnostics: NvimDiagnostic[]): string {
 	if (diagnostics.length === 0) return "No diagnostics.";
 	const severityLabel = (s: number) => ({ 1: "E", 2: "W", 3: "I", 4: "H" })[s] ?? "?";
 	return diagnostics
-		.map(
-			(d) =>
-				`  ${severityLabel(d.severity)} ${d.source}:${d.lnum + 1}:${d.col + 1}  ${d.message}`,
-		)
+		.map((d) => `  ${severityLabel(d.severity)} ${d.source}:${d.lnum + 1}:${d.col + 1}  ${d.message}`)
 		.join("\n");
 }
 
@@ -64,11 +57,7 @@ export function createLspDiagnosticsTool(
 			};
 		},
 		renderCall(args, theme, _context) {
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("lsp_diagnostics"))} ${args.path ?? "current"}`,
-				0,
-				0,
-			);
+			return new Text(`${theme.fg("toolTitle", theme.bold("lsp_diagnostics"))} ${args.path ?? "current"}`, 0, 0);
 		},
 		renderResult(result, _options, theme, _context) {
 			const output = result.content
@@ -91,12 +80,8 @@ export function createLspDiagnosticsAgentTool(
 
 const lspReferencesSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
-	line: Type.Optional(
-		Type.Number({ description: "0-indexed line number. Defaults to cursor position." }),
-	),
-	col: Type.Optional(
-		Type.Number({ description: "0-indexed column. Defaults to cursor position." }),
-	),
+	line: Type.Optional(Type.Number({ description: "0-indexed line number. Defaults to cursor position." })),
+	col: Type.Optional(Type.Number({ description: "0-indexed column. Defaults to cursor position." })),
 });
 
 export function createLspReferencesTool(
@@ -106,8 +91,7 @@ export function createLspReferencesTool(
 	return {
 		name: "lsp_references",
 		label: "lsp_references",
-		description:
-			"Find all LSP references to the symbol at the cursor (or specified position).",
+		description: "Find all LSP references to the symbol at the cursor (or specified position).",
 		parameters: lspReferencesSchema,
 		async execute(_id, { path, line, col }, _signal) {
 			const name = await resolvePath(path, cwd, client);
@@ -119,8 +103,7 @@ export function createLspReferencesTool(
 			if (refs.length === 0)
 				return { content: [{ type: "text" as const, text: "No references found." }], details: undefined };
 			const lines = refs.map(
-				(r: NvimLspLocation) =>
-					`  ${r.uri}:${r.range.start.line + 1}:${r.range.start.character + 1}`,
+				(r: NvimLspLocation) => `  ${r.uri}:${r.range.start.line + 1}:${r.range.start.character + 1}`,
 			);
 			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
 		},
@@ -152,12 +135,8 @@ export function createLspReferencesAgentTool(
 
 const lspDefinitionSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
-	line: Type.Optional(
-		Type.Number({ description: "0-indexed line number. Defaults to cursor position." }),
-	),
-	col: Type.Optional(
-		Type.Number({ description: "0-indexed column. Defaults to cursor position." }),
-	),
+	line: Type.Optional(Type.Number({ description: "0-indexed line number. Defaults to cursor position." })),
+	col: Type.Optional(Type.Number({ description: "0-indexed column. Defaults to cursor position." })),
 });
 
 export function createLspDefinitionTool(
@@ -167,8 +146,7 @@ export function createLspDefinitionTool(
 	return {
 		name: "lsp_definition",
 		label: "lsp_definition",
-		description:
-			"Go to the definition of the symbol at the cursor (or specified position).",
+		description: "Go to the definition of the symbol at the cursor (or specified position).",
 		parameters: lspDefinitionSchema,
 		async execute(_id, { path, line, col }, _signal) {
 			const name = await resolvePath(path, cwd, client);
@@ -180,8 +158,7 @@ export function createLspDefinitionTool(
 			if (defs.length === 0)
 				return { content: [{ type: "text" as const, text: "No definition found." }], details: undefined };
 			const lines = defs.map(
-				(d: NvimLspLocation) =>
-					`  ${d.uri}:${d.range.start.line + 1}:${d.range.start.character + 1}`,
+				(d: NvimLspLocation) => `  ${d.uri}:${d.range.start.line + 1}:${d.range.start.character + 1}`,
 			);
 			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
 		},
@@ -213,23 +190,15 @@ export function createLspDefinitionAgentTool(
 
 const lspHoverSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
-	line: Type.Optional(
-		Type.Number({ description: "0-indexed line number. Defaults to cursor position." }),
-	),
-	col: Type.Optional(
-		Type.Number({ description: "0-indexed column. Defaults to cursor position." }),
-	),
+	line: Type.Optional(Type.Number({ description: "0-indexed line number. Defaults to cursor position." })),
+	col: Type.Optional(Type.Number({ description: "0-indexed column. Defaults to cursor position." })),
 });
 
-export function createLspHoverTool(
-	cwd: string,
-	client: NvimSocketClient,
-): ToolDefinition<typeof lspHoverSchema> {
+export function createLspHoverTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof lspHoverSchema> {
 	return {
 		name: "lsp_hover",
 		label: "lsp_hover",
-		description:
-			"Get LSP hover information for the symbol at the cursor (or specified position).",
+		description: "Get LSP hover information for the symbol at the cursor (or specified position).",
 		parameters: lspHoverSchema,
 		async execute(_id, { path, line, col }, _signal) {
 			const name = await resolvePath(path, cwd, client);
@@ -265,10 +234,7 @@ export function createLspHoverTool(
 	};
 }
 
-export function createLspHoverAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof lspHoverSchema> {
+export function createLspHoverAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof lspHoverSchema> {
 	return wrapToolDefinition(createLspHoverTool(cwd, client));
 }
 
@@ -281,15 +247,11 @@ const tsQuerySchema = Type.Object({
 	}),
 });
 
-export function createTsQueryTool(
-	cwd: string,
-	client: NvimSocketClient,
-): ToolDefinition<typeof tsQuerySchema> {
+export function createTsQueryTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof tsQuerySchema> {
 	return {
 		name: "ts_query",
 		label: "ts_query",
-		description:
-			"Query the treesitter AST of a buffer. Returns matching nodes and their ranges.",
+		description: "Query the treesitter AST of a buffer. Returns matching nodes and their ranges.",
 		parameters: tsQuerySchema,
 		async execute(_id, { path, query }, _signal) {
 			const name = await resolvePath(path, cwd, client);
@@ -316,10 +278,7 @@ export function createTsQueryTool(
 	};
 }
 
-export function createTsQueryAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof tsQuerySchema> {
+export function createTsQueryAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof tsQuerySchema> {
 	return wrapToolDefinition(createTsQueryTool(cwd, client));
 }
 
@@ -327,9 +286,7 @@ export function createTsQueryAgentTool(
 
 const buffersSchema = Type.Object({});
 
-export function createBuffersTool(
-	client: NvimSocketClient,
-): ToolDefinition<typeof buffersSchema> {
+export function createBuffersTool(client: NvimSocketClient): ToolDefinition<typeof buffersSchema> {
 	return {
 		name: "buffers",
 		label: "buffers",
@@ -338,13 +295,10 @@ export function createBuffersTool(
 		async execute() {
 			const buffers = await client.getBuffers();
 			const lines = buffers.map(
-				(b) =>
-					`  ${b.bufnr}  ${b.modified ? "[+]" : "[ ]"}  ${(b.filetype ?? "").padEnd(12)}  ${b.name}`,
+				(b) => `  ${b.bufnr}  ${b.modified ? "[+]" : "[ ]"}  ${(b.filetype ?? "").padEnd(12)}  ${b.name}`,
 			);
 			return {
-				content: [
-					{ type: "text" as const, text: lines.join("\n") || "No buffers." },
-				],
+				content: [{ type: "text" as const, text: lines.join("\n") || "No buffers." }],
 				details: undefined,
 			};
 		},
@@ -369,7 +323,9 @@ export function createBuffersAgentTool(client: NvimSocketClient): AgentTool<type
 
 const nvimSearchSchema = Type.Object({
 	pattern: Type.String({ description: "Search pattern (regex or literal)" }),
-	path: Type.Optional(Type.String({ description: "Directory or file to search (default: current buffer's directory)" })),
+	path: Type.Optional(
+		Type.String({ description: "Directory or file to search (default: current buffer's directory)" }),
+	),
 	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts'" })),
 	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal (default: false)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum matches (default: 100)" })),
@@ -381,10 +337,7 @@ const nvimSearchSchema = Type.Object({
 	),
 });
 
-export function createNvimSearchTool(
-	cwd: string,
-	client: NvimSocketClient,
-): ToolDefinition<typeof nvimSearchSchema> {
+export function createNvimSearchTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof nvimSearchSchema> {
 	return {
 		name: "nvim_search",
 		label: "nvim_search",
@@ -470,9 +423,7 @@ return vim.inspect(results)
 						details: undefined,
 					};
 				}
-				const lines = parsed.map(
-					(r) => `  ${r.file}:${r.lnum}:${r.col}: ${r.text}`,
-				);
+				const lines = parsed.map((r) => `  ${r.file}:${r.lnum}:${r.col}: ${r.text}`);
 				return {
 					content: [{ type: "text" as const, text: lines.join("\n") }],
 					details: undefined,
@@ -487,11 +438,7 @@ return vim.inspect(results)
 		renderCall(args, theme, _context) {
 			const pattern = args.pattern ?? "";
 			const where = args.path ?? "project";
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("nvim_search"))} /${pattern}/ in ${where}`,
-				0,
-				0,
-			);
+			return new Text(`${theme.fg("toolTitle", theme.bold("nvim_search"))} /${pattern}/ in ${where}`, 0, 0);
 		},
 		renderResult(result, _options, theme, _context) {
 			const output = result.content
@@ -503,10 +450,7 @@ return vim.inspect(results)
 	};
 }
 
-export function createNvimSearchAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof nvimSearchSchema> {
+export function createNvimSearchAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof nvimSearchSchema> {
 	return wrapToolDefinition(createNvimSearchTool(cwd, client));
 }
 
@@ -518,8 +462,7 @@ const nvimFindFilesSchema = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "Maximum results (default: 200)" })),
 	backend: Type.Optional(
 		Type.String({
-			description:
-				"Search backend: 'auto', 'telescope', 'fzf_lua', 'fd', 'glob'. Default: 'auto'.",
+			description: "Search backend: 'auto', 'telescope', 'fzf_lua', 'fd', 'glob'. Default: 'auto'.",
 		}),
 	),
 });
@@ -562,9 +505,7 @@ return vim.inspect(results)
 				const parsed = JSON.parse(result) as string[];
 				if (!parsed || parsed.length === 0) {
 					return {
-						content: [
-							{ type: "text" as const, text: "No files found matching pattern." },
-						],
+						content: [{ type: "text" as const, text: "No files found matching pattern." }],
 						details: undefined,
 					};
 				}
@@ -605,10 +546,7 @@ export function createNvimFindFilesAgentTool(
 
 // ── all nvim tools ──────────────────────────────────────────────────────────
 
-export function createNvimToolDefinitions(
-	cwd: string,
-	client: NvimSocketClient,
-): ToolDefinition[] {
+export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient): ToolDefinition[] {
 	return [
 		createLspDiagnosticsTool(cwd, client),
 		createLspReferencesTool(cwd, client),
@@ -622,10 +560,7 @@ export function createNvimToolDefinitions(
 	];
 }
 
-export function createNvimAgentTools(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<any>[] {
+export function createNvimAgentTools(cwd: string, client: NvimSocketClient): AgentTool<any>[] {
 	return [
 		createLspDiagnosticsAgentTool(cwd, client),
 		createLspReferencesAgentTool(cwd, client),

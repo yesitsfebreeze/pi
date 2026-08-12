@@ -3,13 +3,14 @@
  * registered by extensions via pi.registerHealthCheck() are discovered and
  * run by the doctor probe, with timeout and error handling.
  */
+
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { runDoctorProbe } from "../../src/core/doctor.ts";
-import type { ExtensionContext, HealthCheck, RegisteredHealthCheck } from "../../src/core/extensions/types.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/runner.ts";
+import type { ExtensionContext, HealthCheck, RegisteredHealthCheck } from "../../src/core/extensions/types.ts";
 
 function tmpDir(): string {
 	return mkdtempSync(join(tmpdir(), "doctor-ext-"));
@@ -41,10 +42,12 @@ describe("doctor probe — extension health checks", () => {
 	it("runs a passing extension health check and includes it in the table", async () => {
 		const dir = tmpDir();
 		try {
-			const runner = fakeRunner([
-				registered("myext:config", () => ({ status: "PASS", detail: "configured" })),
-			]);
-			const { results, table } = await runDoctorProbe({ cwd: dir, extensionRunner: runner, extensionContext: fakeCtx });
+			const runner = fakeRunner([registered("myext:config", () => ({ status: "PASS", detail: "configured" }))]);
+			const { results, table } = await runDoctorProbe({
+				cwd: dir,
+				extensionRunner: runner,
+				extensionContext: fakeCtx,
+			});
 			const ext = results.find((r) => r.check === "myext:config");
 			expect(ext?.status).toBe("PASS");
 			expect(ext?.detail).toContain("configured");
@@ -87,9 +90,7 @@ describe("doctor probe — extension health checks", () => {
 
 	it("accepts a HealthCheckResult returned from an async check", async () => {
 		const dir = tmpDir();
-		const runner = fakeRunner([
-			registered("async:ok", async () => ({ status: "OK", detail: "async fine" })),
-		]);
+		const runner = fakeRunner([registered("async:ok", async () => ({ status: "OK", detail: "async fine" }))]);
 		const { results } = await runDoctorProbe({ cwd: dir, extensionRunner: runner, extensionContext: fakeCtx });
 		const ext = results.find((r) => r.check === "async:ok");
 		expect(ext?.status).toBe("OK");

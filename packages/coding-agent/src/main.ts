@@ -47,8 +47,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { connectNvim, discoverNvim, createNvimToolDefinitions, nvimToolOps } from "./core/nvim.ts";
-import { createToolDefinition } from "./core/tools/index.ts";
+import { connectNvim, createNvimToolDefinitions, discoverNvim, nvimToolOps } from "./core/nvim.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -61,6 +60,7 @@ import {
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { createToolDefinition } from "./core/tools/index.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -938,13 +938,27 @@ export async function main(args: string[], options?: MainOptions) {
 			for (const name of toolNames) {
 				const options: Record<string, unknown> = {};
 				switch (name) {
-					case "read": options.read = { operations: nvimOps.read }; break;
-					case "write": options.write = { operations: nvimOps.write }; break;
-					case "edit": options.edit = { operations: nvimOps.edit }; break;
-					case "grep": options.grep = { operations: nvimOps.grep }; break;
-					case "find": options.find = { operations: nvimOps.find }; break;
-					case "ls": options.ls = { operations: nvimOps.ls }; break;
-					case "bash": options.bash = { operations: nvimOps.bash }; break;
+					case "read":
+						options.read = { operations: nvimOps.read };
+						break;
+					case "write":
+						options.write = { operations: nvimOps.write };
+						break;
+					case "edit":
+						options.edit = { operations: nvimOps.edit };
+						break;
+					case "grep":
+						options.grep = { operations: nvimOps.grep };
+						break;
+					case "find":
+						options.find = { operations: nvimOps.find };
+						break;
+					case "ls":
+						options.ls = { operations: nvimOps.ls };
+						break;
+					case "bash":
+						options.bash = { operations: nvimOps.bash };
+						break;
 				}
 				const def = createToolDefinition(name, process.cwd(), options as any);
 				session.registerAdditionalTool(def);

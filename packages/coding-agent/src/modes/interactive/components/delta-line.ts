@@ -5,6 +5,12 @@ import { formatTokens } from "./footer.ts";
 
 const SEP = " \x1b[2m·\x1b[22m ";
 
+/** Icon prefix that identifies the delta line. */
+const ICON = "▸";
+
+/** Thick horizontal fill character drawn to the right edge after the content. */
+const FILL = "━";
+
 /** Absolute minimum model name width before dropping the field entirely. */
 const MODEL_MIN_WIDTH = 5;
 
@@ -62,7 +68,11 @@ export class DeltaLineComponent implements Component {
 				parts.push(theme.bold(theme.fg("success", `$${this.usage.cost.total.toFixed(3)}`)));
 			}
 			const line = parts.join(SEP);
-			return [truncateToWidth(line, width, theme.fg("dim", "..."))];
+			const prefix = theme.fg("dim", ICON) + " ";
+			const content = prefix + line;
+			const cw = visibleWidth(content);
+			if (cw < width) return [content + theme.fg("dim", FILL.repeat(width - cw))];
+			return [truncateToWidth(content, width, theme.fg("dim", "..."))];
 		}
 
 		const fields: string[] = [];
@@ -125,6 +135,10 @@ export class DeltaLineComponent implements Component {
 			}
 		}
 
-		return [line];
+		const prefix = theme.fg("dim", ICON) + " ";
+		const content = prefix + line;
+		const cw = visibleWidth(content);
+		if (cw < width) return [content + theme.fg("dim", FILL.repeat(width - cw))];
+		return [truncateToWidth(content, width, theme.fg("dim", "..."))];
 	}
 }

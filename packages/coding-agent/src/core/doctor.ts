@@ -10,10 +10,10 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
+import type { ExtensionRunner } from "./extensions/runner.ts";
 import type {
 	AgentToolUpdateCallback,
 	ExtensionContext,
@@ -21,7 +21,6 @@ import type {
 	RegisteredHealthCheck,
 	ToolDefinition,
 } from "./extensions/types.ts";
-import type { ExtensionRunner } from "./extensions/runner.ts";
 
 const execFileP = promisify(execFile);
 
