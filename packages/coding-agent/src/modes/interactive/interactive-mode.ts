@@ -3,7 +3,7 @@
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
 
-import * as crypto from "node:crypto";
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -65,6 +65,7 @@ import {
 	computeCacheWaste,
 	detectCacheMiss,
 } from "../../core/cache-stats.ts";
+import { runDoctorProbeFromRunner } from "../../core/doctor.ts";
 // import { type HotReloadEvent, startHotReload } from "../../core/dev-hot-reload.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -79,7 +80,6 @@ import type {
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
@@ -89,6 +89,8 @@ import {
 	resolveModelScopeFromModels,
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
+import { connectNvim, discoverNvim, nvimToolOps, createNvimToolDefinitions, type NvimConnection } from "../../core/nvim.ts";
+import { createToolDefinition, type ToolsOptions } from "../../core/tools/index.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -97,12 +99,14 @@ import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+import { errorMessage } from "../../utils/error.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
@@ -136,8 +140,10 @@ import {
 	formatAuthSelectorProviderType,
 	OAuthSelectorComponent,
 } from "./components/oauth-selector.ts";
+import { RoundedBox } from "./components/rounded-box.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
+import { SessionTreeComponent } from "./components/session-tree.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import {
@@ -146,9 +152,8 @@ import {
 	IdleStatus,
 	RetryStatusIndicator,
 	type StatusIndicator,
-	WorkingStatusIndicator,
 } from "./components/status-indicator.ts";
-import { StatusLineComponent } from "./components/status-line.ts";
+import { type GitStatus, StatusLineComponent, type StatusLineData } from "./components/status-line.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
@@ -162,7 +167,6 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
-	InteractiveThemeController,
 	onThemeChange,
 	setRegisteredThemes,
 	stopThemeWatcher,
@@ -170,6 +174,7 @@ import {
 	type ThemeColor,
 	theme,
 } from "./theme/theme.ts";
+import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -414,21 +419,23 @@ export class InteractiveMode {
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
 	private keybindings: KeybindingsManager;
 	private version: string;
+	private updateAvailable = false;
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
+	private _nvimConnected = false;
+	private _nvimConnection?: NvimConnection;
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
 	private readonly idleStatus = new IdleStatus();
-	private workingMessage: string | undefined = undefined;
-	private workingVisible = true;
-	private workingIndicatorOptions: WorkingIndicatorOptions | undefined = undefined;
-	private readonly defaultWorkingMessage = "Working...";
+	private workingVisible = false;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
+	private startupBannerContainer: Container;
+	private startupBannerShown = true;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
 
@@ -499,6 +506,8 @@ export class InteractiveMode {
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
+	private sessionTreeContainer!: Container;
+	private sessionTreeComponent!: SessionTreeComponent;
 
 	// Header container that holds the built-in or custom header
 	private headerContainer: Container;
@@ -560,8 +569,18 @@ export class InteractiveMode {
 		this.documentContainer.addChild(this.chatContainer);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
+		this.startupBannerContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		this.sessionTreeContainer = new Container();
+		this.sessionTreeComponent = new SessionTreeComponent(() => this.ui.requestRender());
+		this.sessionTreeComponent.onFocusLeave = () => {
+			this.ui.setFocus(this.editor);
+		};
+		this.sessionTreeComponent.onSelectSession = (sessionId, cwd) => {
+			this.switchToSession(sessionId, cwd);
+		};
+		this.sessionTreeContainer.addChild(this.sessionTreeComponent);
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -573,9 +592,14 @@ export class InteractiveMode {
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
-		this.statusLine = new StatusLineComponent(() => this.getStatusLineData());
+		this.statusLine = new StatusLineComponent(() => this.getStatusLineData(), this.ui);
 		this.statusLineContainer = new Container();
 		this.statusLineContainer.addChild(this.statusLine);
+
+		// Wire editor boundary focus to session tree
+		this.defaultEditor.onCursorDownAtEnd = () => {
+			this.ui.setFocus(this.sessionTreeComponent);
+		};
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -877,9 +901,11 @@ export class InteractiveMode {
 			scrollbar: this.settingsManager.getFullscreenScrollbar(),
 			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
 		});
-		const dock = new TuiLayouts.VStack([
+		// Layout: chat on top (~60%), input in the middle, session net below (~40%)
+		const editorDock = new TuiLayouts.VStack([
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
+			{ component: this.startupBannerContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusLineContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
@@ -887,16 +913,19 @@ export class InteractiveMode {
 		]);
 		const topComponent = this.transcriptScrollView;
 		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
-			{ component: topComponent, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+			{ component: topComponent, basis: 0, grow: 6, shrink: 1, minSize: 1 },
+			{ component: editorDock, basis: "auto", grow: 0, shrink: 1, minSize: 3 },
+			{ component: this.sessionTreeContainer, basis: 0, grow: 4, shrink: 1, minSize: 1 },
 		]);
 		this.mountInteractiveTui(this.renderer, [
 			this.documentContainer,
 			this.pendingMessagesContainer,
 			this.statusContainer,
+			this.startupBannerContainer,
 			this.statusLineContainer,
 			this.widgetContainerAbove,
 			this.editorContainer,
+			this.sessionTreeContainer,
 			this.widgetContainerBelow,
 		]);
 		this.ui.setFocus(this.editor);
@@ -906,6 +935,7 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
+		this.sessionTreeComponent.start();
 		this.isInitialized = true;
 
 		await this.themeController.applyFromSettings();
@@ -962,15 +992,15 @@ export class InteractiveMode {
 			);
 
 			// Setup UI layout
-			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
-			this.headerContainer.addChild(new Spacer(1));
 		} else {
 			// Minimal header when silenced
 			this.builtInHeader = new Text("", 0, 0);
 			this.headerContainer.addChild(this.builtInHeader);
 		}
 		this.ui.requestRender();
+
+		this.showStartupBanner();
 
 		// Initialize extensions first so resources are shown before messages
 		await this.rebindCurrentSession();
@@ -1025,6 +1055,7 @@ export class InteractiveMode {
 		// Start version check asynchronously
 		checkForNewPiVersion(this.version).then((newRelease) => {
 			if (newRelease) {
+				this.updateAvailable = true;
 				this.showNewVersionNotification(newRelease);
 			}
 		});
@@ -1033,6 +1064,7 @@ export class InteractiveMode {
 		this.checkForPackageUpdates()
 			.then((updates) => {
 				if (updates.length > 0) {
+					this.updateAvailable = true;
 					this.showPackageUpdateNotification(updates);
 				}
 			})
@@ -2065,27 +2097,37 @@ export class InteractiveMode {
 	private setWorkingVisible(visible: boolean): void {
 		this.workingVisible = visible;
 		if (!visible) {
+			this.statusLine.stopSpinner();
 			this.clearStatusIndicator("working");
 			this.ui.requestRender();
 			return;
 		}
-		if (this.session.isStreaming && this.activeStatusIndicator?.kind !== "working") {
-			this.showStatusIndicator(
-				new WorkingStatusIndicator(
-					this.ui,
-					this.workingMessage ?? this.defaultWorkingMessage,
-					this.workingIndicatorOptions,
-				),
-			);
-		}
+		this.statusLine.startSpinner();
 		this.ui.requestRender();
 	}
 
-	private setWorkingIndicator(options?: WorkingIndicatorOptions): void {
-		this.workingIndicatorOptions = options;
-		if (this.activeStatusIndicator?.kind === "working") {
-			this.activeStatusIndicator.setIndicator(options);
+	private setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
+		this.ui.requestRender();
+	}
+
+	private showStartupBanner(): void {
+		const modelId = this.session.state.model?.id ?? "unknown";
+		const d = this.getStatusLineData();
+		const parts: string[] = [];
+		parts.push(theme.fg("accent", `Model: ${modelId}`));
+		if (d.inputTokens > 0 || d.outputTokens > 0) {
+			const tok: string[] = [];
+			if (d.inputTokens > 0) tok.push(`↑${formatTokens(d.inputTokens)}`);
+			if (d.outputTokens > 0) tok.push(`↓${formatTokens(d.outputTokens)}`);
+			parts.push(theme.fg("muted", tok.join(" ")));
 		}
+		if (d.sessionCost > 0) parts.push(theme.bold(theme.fg("success", `$${d.sessionCost.toFixed(3)}`)));
+		if (d.contextWindow > 0 && d.contextPercent !== null) {
+			parts.push(theme.fg("dim", `${d.contextPercent.toFixed(1)}% of ${formatTokens(d.contextWindow)}`));
+		}
+		const line = parts.join(" \x1b[2m·\x1b[22m ");
+		this.startupBannerContainer.clear();
+		this.startupBannerContainer.addChild(new Text(line, 0, 0));
 		this.ui.requestRender();
 	}
 
@@ -2178,13 +2220,9 @@ export class InteractiveMode {
 		this.setupAutocompleteProvider();
 		this.defaultEditor.onExtensionShortcut = undefined;
 		this.updateTerminalTitle();
-		this.workingMessage = undefined;
-		this.workingVisible = true;
 		this.setWorkingIndicator();
 		if (this.activeStatusIndicator?.kind === "working") {
-			this.activeStatusIndicator.setMessage(
-				`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`,
-			);
+			this.clearStatusIndicator("working");
 		}
 		this.setHiddenThinkingLabel();
 	}
@@ -2197,7 +2235,7 @@ export class InteractiveMode {
 	 */
 	private renderWidgets(): void {
 		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
-		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
+		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, false, true);
 		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
 		this.ui.requestRender();
 	}
@@ -2320,11 +2358,8 @@ export class InteractiveMode {
 			notify: (message, type) => this.showExtensionNotify(message, type),
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
 			setStatus: (key, text) => this.setExtensionStatus(key, text),
-			setWorkingMessage: (message) => {
-				this.workingMessage = message;
-				if (this.activeStatusIndicator?.kind === "working") {
-					this.activeStatusIndicator.setMessage(message ?? this.defaultWorkingMessage);
-				}
+			setWorkingMessage: (_message) => {
+				// loader is in status line, no message text
 			},
 			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
 			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
@@ -2783,6 +2818,9 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 		this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
+		this.defaultEditor.onAction("app.session.focusTree", () => {
+			this.ui.setFocus(this.sessionTreeComponent);
+		});
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -2842,6 +2880,11 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
+
+			if (this.startupBannerShown) {
+				this.startupBannerShown = false;
+				this.startupBannerContainer.clear();
+			}
 
 			// Handle commands
 			if (text === "/settings") {
@@ -2962,9 +3005,19 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/doctor") {
+				this.editor.setText("");
+				await this.handleDoctorCommand();
+				return;
+			}
 			if (text === "/resume") {
 				this.showSessionSelector();
 				this.editor.setText("");
+				return;
+			}
+			if (text === "/nvim" || text.startsWith("/nvim ")) {
+				this.editor.setText("");
+				await this.handleNvimCommand(text);
 				return;
 			}
 			if (text === "/quit") {
@@ -3061,360 +3114,386 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
-				this.pendingTools.clear();
-				if (this.settingsManager.getShowTerminalProgress()) {
-					this.ui.terminal.setProgress(true);
-				}
-				// Restore main escape handler if retry handler is still active
-				// (retry success event fires later, but we need main handler now)
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
-				}
-				if (this.workingVisible) {
-					this.showStatusIndicator(
-						new WorkingStatusIndicator(
-							this.ui,
-							this.workingMessage ?? this.defaultWorkingMessage,
-							this.workingIndicatorOptions,
-						),
-					);
-				} else {
-					this.clearStatusIndicator();
-				}
-				this.ui.requestRender();
-				break;
-
+				return this.handleAgentStart(event);
 			case "queue_update":
-				this.updatePendingMessagesDisplay();
-				this.ui.requestRender();
-				break;
-
+				return this.handleQueueUpdate(event);
 			case "entry_appended":
-				if (event.entry.type === "custom") {
-					this.addCustomEntryToChat(event.entry);
-					this.ui.requestRender();
-				}
-				break;
-
+				return this.handleEntryAppended(event);
 			case "session_info_changed":
-				this.updateTerminalTitle();
-				this.ui.requestRender();
-				break;
-
+				return this.handleSessionInfoChanged(event);
 			case "thinking_level_changed":
-				this.updateEditorBorderColor();
-				break;
-
+				return this.handleThinkingLevelChanged(event);
 			case "message_start":
-				if (event.message.role === "custom") {
-					this.addMessageToChat(event.message);
-					this.ui.requestRender();
-				} else if (event.message.role === "user") {
-					this.addMessageToChat(event.message);
-					this.updatePendingMessagesDisplay();
-					this.ui.requestRender();
-				} else if (event.message.role === "assistant") {
-					this.responseStartTime = Date.now();
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-						this.outputPad,
-						this.getMarkdownTransformers(),
-					);
-					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage, true);
-					this.ui.requestRender();
-				}
-				break;
-
+				return this.handleMessageStart(event);
 			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage, true);
-
-					for (const content of this.streamingMessage.content) {
-						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-									this.sessionManager.getCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						}
-					}
-					this.ui.requestRender();
-				}
-				break;
-
+				return this.handleMessageUpdate(event);
 			case "message_end":
-				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
-					let errorMessage: string | undefined;
-					if (this.streamingMessage.stopReason === "aborted") {
-						const retryAttempt = this.session.retryAttempt;
-						errorMessage =
-							retryAttempt > 0
-								? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-								: "Operation aborted";
-						this.streamingMessage.errorMessage = errorMessage;
-					}
-					this.streamingComponent.updateContent(this.streamingMessage, false);
-
-					const durationMs = Date.now() - this.responseStartTime;
-					const modelName = this.session.state.model?.id || "unknown";
-					const thinkingLevel = this.session.state.thinkingLevel;
-
-					// Update cumulative cost incrementally (O(1) per response).
-					if (this.streamingMessage.usage) {
-						this.cumulativeSessionCost += this.streamingMessage.usage.cost.total;
-					}
-
-					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
-						if (!errorMessage) {
-							errorMessage = this.streamingMessage.errorMessage || "Error";
-						}
-						for (const [, component] of this.pendingTools.entries()) {
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
-						}
-						this.pendingTools.clear();
-
-						// Show error delta line with partial token/cost data if available.
-						if (this.streamingMessage.usage) {
-							this.chatContainer.addChild(
-								new DeltaLineComponent({
-									usage: this.streamingMessage.usage,
-									durationMs,
-									modelName,
-									thinkingLevel,
-									sessionCost: this.cumulativeSessionCost,
-									isError: true,
-									errorLabel: errorMessage,
-								}),
-							);
-						}
-					} else {
-						// Args are now complete - trigger diff computation for edit tools
-						for (const [, component] of this.pendingTools.entries()) {
-							component.setArgsComplete();
-						}
-						this.maybeShowCacheMissNotice(this.streamingMessage);
-
-						// Append per-response status below the assistant message.
-						if (this.streamingMessage.usage) {
-							this.chatContainer.addChild(
-								new DeltaLineComponent({
-									usage: this.streamingMessage.usage,
-									durationMs,
-									modelName,
-									thinkingLevel,
-									sessionCost: this.cumulativeSessionCost,
-								}),
-							);
-						}
-					}
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-					this.responseStartTime = 0;
-				}
-				this.ui.requestRender();
-				break;
-
+				return this.handleMessageEnd(event);
 			case "bash_execution_update":
-				// The bash execution callback handles TUI output rendering.
-				break;
-
-			case "tool_execution_start": {
-				let component = this.pendingTools.get(event.toolCallId);
-				if (!component) {
-					component = new ToolExecutionComponent(
-						event.toolName,
-						event.toolCallId,
-						event.args,
-						{
-							showImages: this.settingsManager.getShowImages(),
-							imageWidthCells: this.settingsManager.getImageWidthCells(),
-						},
-						this.getRegisteredToolDefinition(event.toolName),
-						this.ui,
-						this.sessionManager.getCwd(),
-					);
-					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(component);
-					this.pendingTools.set(event.toolCallId, component);
-				}
-				component.markExecutionStarted();
-				this.ui.requestRender();
-				break;
-			}
-
-			case "tool_execution_update": {
-				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.partialResult, isError: false }, true);
-					this.ui.requestRender();
-				}
-				break;
-			}
-
-			case "tool_execution_end": {
-				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.result, isError: event.isError });
-					this.pendingTools.delete(event.toolCallId);
-					this.ui.requestRender();
-				}
-				break;
-			}
-
+				return this.handleBashExecutionUpdate(event);
+			case "tool_execution_start":
+				return this.handleToolExecutionStart(event);
+			case "tool_execution_update":
+				return this.handleToolExecutionUpdate(event);
+			case "tool_execution_end":
+				return this.handleToolExecutionEnd(event);
 			case "agent_end":
-				if (this.settingsManager.getShowTerminalProgress()) {
-					this.ui.terminal.setProgress(false);
+				return this.handleAgentEnd(event);
+			case "agent_settled":
+				return this.handleAgentSettled(event);
+			case "compaction_start":
+				return this.handleCompactionStart(event);
+			case "compaction_end":
+				return this.handleCompactionEnd(event);
+			case "auto_retry_start":
+				return this.handleAutoRetryStart(event);
+			case "auto_retry_end":
+				return this.handleAutoRetryEnd(event);
+			case "summarization_retry_scheduled":
+				return this.handleSummarizationRetryScheduled(event);
+			case "summarization_retry_attempt_start":
+				return this.handleSummarizationRetryAttemptStart(event);
+			case "summarization_retry_finished":
+				return this.handleSummarizationRetryFinished(event);
+		}
+	}
+
+	private handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): void {
+		this.pendingTools.clear();
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(true);
+		}
+		// Restore main escape handler if retry handler is still active
+		// (retry success event fires later, but we need main handler now)
+		if (this.retryEscapeHandler) {
+			this.defaultEditor.onEscape = this.retryEscapeHandler;
+			this.retryEscapeHandler = undefined;
+		}
+		this.setWorkingVisible(true);
+	}
+
+	private handleQueueUpdate(_event: Extract<AgentSessionEvent, { type: "queue_update" }>): void {
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
+	}
+
+	private handleEntryAppended(event: Extract<AgentSessionEvent, { type: "entry_appended" }>): void {
+		if (event.entry.type === "custom") {
+			this.addCustomEntryToChat(event.entry);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleSessionInfoChanged(_event: Extract<AgentSessionEvent, { type: "session_info_changed" }>): void {
+		this.updateTerminalTitle();
+		this.ui.requestRender();
+	}
+
+	private handleThinkingLevelChanged(_event: Extract<AgentSessionEvent, { type: "thinking_level_changed" }>): void {
+		this.updateEditorBorderColor();
+	}
+
+	private handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): void {
+		if (event.message.role === "custom") {
+			this.addMessageToChat(event.message);
+			this.ui.requestRender();
+		} else if (event.message.role === "user") {
+			this.addMessageToChat(event.message);
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+		} else if (event.message.role === "assistant") {
+			this.responseStartTime = Date.now();
+			this.streamingComponent = new AssistantMessageComponent(
+				undefined,
+				this.hideThinkingBlock,
+				this.getMarkdownThemeWithSettings(),
+				this.hiddenThinkingLabel,
+				this.outputPad,
+				this.getMarkdownTransformers(),
+			);
+			this.streamingMessage = event.message;
+			this.chatContainer.addChild(this.streamingComponent);
+			this.streamingComponent.updateContent(this.streamingMessage, true);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
+		if (this.streamingComponent && event.message.role === "assistant") {
+			this.streamingMessage = event.message;
+			this.streamingComponent.updateContent(this.streamingMessage, true);
+
+			for (const content of this.streamingMessage.content) {
+				if (content.type === "toolCall") {
+					if (!this.pendingTools.has(content.id)) {
+						const component = new ToolExecutionComponent(
+							content.name,
+							content.id,
+							content.arguments,
+							{
+								showImages: this.settingsManager.getShowImages(),
+								imageWidthCells: this.settingsManager.getImageWidthCells(),
+							},
+							this.getRegisteredToolDefinition(content.name),
+							this.ui,
+							this.sessionManager.getCwd(),
+						);
+						component.setExpanded(this.toolOutputExpanded);
+						this.chatContainer.addChild(component);
+						this.pendingTools.set(content.id, component);
+					} else {
+						const component = this.pendingTools.get(content.id);
+						if (component) {
+							component.updateArgs(content.arguments);
+						}
+					}
 				}
-				this.clearStatusIndicator("working");
-				if (this.streamingComponent) {
-					this.chatContainer.removeChild(this.streamingComponent);
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
+			}
+			this.ui.requestRender();
+		}
+	}
+
+	private handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): void {
+		if (event.message.role === "user") return;
+		if (this.streamingComponent && event.message.role === "assistant") {
+			this.streamingMessage = event.message;
+			let errorMessage: string | undefined;
+			if (this.streamingMessage.stopReason === "aborted") {
+				const retryAttempt = this.session.retryAttempt;
+				errorMessage =
+					retryAttempt > 0
+						? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
+						: "Operation aborted";
+				this.streamingMessage.errorMessage = errorMessage;
+			}
+			this.streamingComponent.updateContent(this.streamingMessage, false);
+
+			const durationMs = Date.now() - this.responseStartTime;
+			const modelName = this.session.state.model?.id || "unknown";
+			const thinkingLevel = this.session.state.thinkingLevel;
+
+			// Update cumulative cost incrementally (O(1) per response).
+			if (this.streamingMessage.usage) {
+				this.cumulativeSessionCost += this.streamingMessage.usage.cost.total;
+			}
+
+			if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+				if (!errorMessage) {
+					errorMessage = this.streamingMessage.errorMessage || "Error";
+				}
+				for (const [, component] of this.pendingTools.entries()) {
+					component.updateResult({
+						content: [{ type: "text", text: errorMessage }],
+						isError: true,
+					});
 				}
 				this.pendingTools.clear();
 
-				this.ui.requestRender();
-				break;
-
-			case "agent_settled":
-				await this.checkShutdownRequested();
-				break;
-
-			case "compaction_start": {
-				if (this.settingsManager.getShowTerminalProgress()) {
-					this.ui.terminal.setProgress(true);
-				}
-				// Keep editor active; submissions are queued during compaction.
-				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortCompaction();
-				};
-				this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
-				this.ui.requestRender();
-				break;
-			}
-
-			case "compaction_end": {
-				if (this.settingsManager.getShowTerminalProgress()) {
-					this.ui.terminal.setProgress(false);
-				}
-				if (this.autoCompactionEscapeHandler) {
-					this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-					this.autoCompactionEscapeHandler = undefined;
-				}
-				this.clearStatusIndicator("compaction");
-				if (event.aborted) {
-					if (event.reason === "manual") {
-						this.showError("Compaction cancelled");
-					} else {
-						this.showStatus("Auto-compaction cancelled");
-					}
-				} else if (event.result) {
-					this.chatContainer.clear();
-					this.rebuildChatFromMessages();
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
+				// Show error delta line with partial token/cost data if available.
+				if (this.streamingMessage.usage) {
+					this.chatContainer.addChild(
+						new DeltaLineComponent({
+							usage: this.streamingMessage.usage,
+							durationMs,
+							modelName,
+							thinkingLevel,
+							isError: true,
+							errorLabel: errorMessage,
+						}),
 					);
-				} else if (event.errorMessage) {
-					if (event.reason === "manual") {
-						this.showError(event.errorMessage);
-					} else {
-						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
-					}
 				}
-				void this.flushCompactionQueue({ willRetry: event.willRetry });
-				this.ui.requestRender();
-				break;
-			}
-
-			case "auto_retry_start": {
-				// Set up escape to abort retry
-				this.retryEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortRetry();
-				};
-				this.showStatusIndicator(
-					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
-				);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "auto_retry_end": {
-				// Restore escape handler
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
+			} else {
+				// Args are now complete - trigger diff computation for edit tools
+				for (const [, component] of this.pendingTools.entries()) {
+					component.setArgsComplete();
 				}
-				this.clearStatusIndicator("retry");
-				// Show error only on final failure (success shows normal response)
-				if (!event.success) {
-					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
-				}
-				this.ui.requestRender();
-				break;
-			}
+				this.maybeShowCacheMissNotice(this.streamingMessage);
 
-			case "summarization_retry_scheduled": {
+				// Append per-response status below the assistant message.
+				if (this.streamingMessage.usage) {
+					this.chatContainer.addChild(
+						new DeltaLineComponent({
+							usage: this.streamingMessage.usage,
+							durationMs,
+							modelName,
+							thinkingLevel,
+						}),
+					);
+				}
+			}
+			this.streamingComponent = undefined;
+			this.streamingMessage = undefined;
+			this.responseStartTime = 0;
+		}
+		this.ui.requestRender();
+	}
+
+	private handleBashExecutionUpdate(_event: Extract<AgentSessionEvent, { type: "bash_execution_update" }>): void {
+		// The bash execution callback handles TUI output rendering.
+	}
+
+	private handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): void {
+		let component = this.pendingTools.get(event.toolCallId);
+		if (!component) {
+			component = new ToolExecutionComponent(
+				event.toolName,
+				event.toolCallId,
+				event.args,
+				{
+					showImages: this.settingsManager.getShowImages(),
+					imageWidthCells: this.settingsManager.getImageWidthCells(),
+				},
+				this.getRegisteredToolDefinition(event.toolName),
+				this.ui,
+				this.sessionManager.getCwd(),
+			);
+			component.setExpanded(this.toolOutputExpanded);
+			this.chatContainer.addChild(component);
+			this.pendingTools.set(event.toolCallId, component);
+		}
+		component.markExecutionStarted();
+		this.ui.requestRender();
+	}
+
+	private handleToolExecutionUpdate(event: Extract<AgentSessionEvent, { type: "tool_execution_update" }>): void {
+		const component = this.pendingTools.get(event.toolCallId);
+		if (component) {
+			component.updateResult({ ...event.partialResult, isError: false }, true);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): void {
+		const component = this.pendingTools.get(event.toolCallId);
+		if (component) {
+			component.updateResult({ ...event.result, isError: event.isError });
+			this.pendingTools.delete(event.toolCallId);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleAgentEnd(_event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(false);
+		}
+		this.setWorkingVisible(false);
+		if (this.streamingComponent) {
+			this.chatContainer.removeChild(this.streamingComponent);
+			this.streamingComponent = undefined;
+			this.streamingMessage = undefined;
+		}
+		this.pendingTools.clear();
+
+		this.ui.requestRender();
+	}
+
+	private async handleAgentSettled(_event: Extract<AgentSessionEvent, { type: "agent_settled" }>): Promise<void> {
+		await this.checkShutdownRequested();
+	}
+
+	private handleCompactionStart(event: Extract<AgentSessionEvent, { type: "compaction_start" }>): void {
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(true);
+		}
+		// Keep editor active; submissions are queued during compaction.
+		this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+		this.defaultEditor.onEscape = () => {
+			this.session.abortCompaction();
+		};
+		this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
+		this.ui.requestRender();
+	}
+
+	private handleCompactionEnd(event: Extract<AgentSessionEvent, { type: "compaction_end" }>): void {
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(false);
+		}
+		if (this.autoCompactionEscapeHandler) {
+			this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
+			this.autoCompactionEscapeHandler = undefined;
+		}
+		this.clearStatusIndicator("compaction");
+		if (event.aborted) {
+			if (event.reason === "manual") {
+				this.showError("Compaction cancelled");
+			} else {
+				this.showStatus("Auto-compaction cancelled");
+			}
+		} else if (event.result) {
+			this.chatContainer.clear();
+			this.rebuildChatFromMessages();
+			this.addMessageToChat(
+				createCompactionSummaryMessage(
+					event.result.summary,
+					event.result.tokensBefore,
+					new Date().toISOString(),
+				),
+			);
+		} else if (event.errorMessage) {
+			if (event.reason === "manual") {
 				this.showError(event.errorMessage);
-				this.showStatusIndicator(
-					new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
-				);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "summarization_retry_attempt_start": {
-				this.clearStatusIndicator("retry");
-				if (event.source === "branchSummary") {
-					this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
-				} else {
-					this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
-				}
-				this.ui.requestRender();
-				break;
-			}
-
-			case "summarization_retry_finished": {
-				this.clearStatusIndicator("retry");
-				this.ui.requestRender();
-				break;
+			} else {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 			}
 		}
+		void this.flushCompactionQueue({ willRetry: event.willRetry });
+		this.ui.requestRender();
+	}
+
+	private handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): void {
+		// Set up escape to abort retry
+		this.retryEscapeHandler = this.defaultEditor.onEscape;
+		this.defaultEditor.onEscape = () => {
+			this.session.abortRetry();
+		};
+		this.showStatusIndicator(
+			new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
+		);
+		this.ui.requestRender();
+	}
+
+	private handleAutoRetryEnd(event: Extract<AgentSessionEvent, { type: "auto_retry_end" }>): void {
+		// Restore escape handler
+		if (this.retryEscapeHandler) {
+			this.defaultEditor.onEscape = this.retryEscapeHandler;
+			this.retryEscapeHandler = undefined;
+		}
+		this.clearStatusIndicator("retry");
+		// Show error only on final failure (success shows normal response)
+		if (!event.success) {
+			this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+		}
+		this.ui.requestRender();
+	}
+
+	private handleSummarizationRetryScheduled(
+		event: Extract<AgentSessionEvent, { type: "summarization_retry_scheduled" }>,
+	): void {
+		this.showError(event.errorMessage);
+		this.showStatusIndicator(
+			new RetryStatusIndicator(this.ui, event.attempt, event.maxAttempts, event.delayMs),
+		);
+		this.ui.requestRender();
+	}
+
+	private handleSummarizationRetryAttemptStart(
+		event: Extract<AgentSessionEvent, { type: "summarization_retry_attempt_start" }>,
+	): void {
+		this.clearStatusIndicator("retry");
+		if (event.source === "branchSummary") {
+			this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
+		} else {
+			this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
+		}
+		this.ui.requestRender();
+	}
+
+	private handleSummarizationRetryFinished(
+		_event: Extract<AgentSessionEvent, { type: "summarization_retry_finished" }>,
+	): void {
+		this.clearStatusIndicator("retry");
+		this.ui.requestRender();
 	}
 
 	/** Extract text content from a user message */
@@ -3814,6 +3893,7 @@ export class InteractiveMode {
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
 
+		this.sessionTreeComponent.stop();
 		this.stop();
 		await this.runtimeHost.dispose();
 
@@ -4124,22 +4204,20 @@ export class InteractiveMode {
 		const changelogLine = theme.fg("muted", "Changelog: ") + changelogLink;
 		const note = release.note?.trim();
 
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
-		this.chatContainer.addChild(
-			new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0),
-		);
+		const box = new RoundedBox("light", (text) => theme.fg("warning", text));
+		box.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0));
 		if (note) {
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
+			box.addChild(new Spacer(1));
+			box.addChild(
 				new Markdown(note, 1, 0, this.getMarkdownThemeWithSettings(), {
 					color: (text) => theme.fg("muted", text),
 				}),
 			);
-			this.chatContainer.addChild(new Spacer(1));
+			box.addChild(new Spacer(1));
 		}
-		this.chatContainer.addChild(new Text(changelogLine, 1, 0));
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		box.addChild(new Text(changelogLine, 1, 0));
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(box);
 		this.ui.requestRender();
 	}
 
@@ -4148,16 +4226,16 @@ export class InteractiveMode {
 		const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
 		const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
 
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
-		this.chatContainer.addChild(
+		const box = new RoundedBox("light", (text) => theme.fg("warning", text));
+		box.addChild(
 			new Text(
 				`${theme.bold(theme.fg("warning", "Package Updates Available"))}\n${updateInstruction}\n${theme.fg("muted", "Packages:")}\n${packageLines}`,
 				1,
 				0,
 			),
 		);
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(box);
 		this.ui.requestRender();
 	}
 
@@ -4594,6 +4672,156 @@ export class InteractiveMode {
 		});
 	}
 
+	private async handleDoctorCommand(): Promise<void> {
+		this.showStatus("Running health probe...");
+		const runner = this.session.extensionRunner;
+		const ctx = runner?.createContext();
+		const { table } = await runDoctorProbeFromRunner(this.sessionManager.getCwd(), runner, ctx);
+		this.showStatus("");
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new DynamicBorder());
+		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Health Probe")), 1, 0));
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(table, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private async handleNvimCommand(text: string): Promise<void> {
+		if (this._nvimConnected) {
+			this.showStatus("Already connected to nvim.");
+			return;
+		}
+		const arg = text.slice(5).trim(); // remove "/nvim "
+
+		// /nvim with no args → generate code, print instructions, auto-connect
+		if (!arg) {
+			const code = `${Math.floor(100 + Math.random() * 900)}-${Math.floor(100 + Math.random() * 900)}`;
+			const sock = `/tmp/nvim-${code}.sock`;
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new DynamicBorder());
+			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Pair with nvim")), 1, 0));
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(`Code: ${code}`, 1, 0));
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text("Run this Ex command in nvim:", 1, 0));
+			this.chatContainer.addChild(new Text(theme.fg("accent", `  :lua vim.fn.serverstart('${sock}')`), 1, 0));
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(theme.fg("muted", "Waiting for connection..."), 1, 0));
+			this.ui.requestRender();
+
+			// Retry loop: wait for socket to appear, then auto-connect
+			for (let i = 0; i < 60; i++) {
+				await new Promise((r) => setTimeout(r, 1000));
+				if (fs.existsSync(sock)) {
+					await this._connectNvimSocket(sock);
+					return;
+				}
+			}
+			this.showStatus("Timed out waiting for nvim. Run /nvim again.");
+			return;
+		}
+
+		let socketPath: string;
+
+		// /nvim 318-673 → /tmp/nvim-318-673.sock
+		if (/^\d{3}-\d{3}$/.test(arg)) {
+			socketPath = `/tmp/nvim-${arg}.sock`;
+		} else {
+			socketPath = arg;
+		}
+
+		if (!fs.existsSync(socketPath)) {
+			this.showStatus(`Socket ${socketPath} not found. Run /nvim for instructions.`);
+			return;
+		}
+
+		await this._connectNvimSocket(socketPath);
+	}
+
+	private async _connectNvimSocket(socketPath: string): Promise<void> {
+		try {
+			this.showStatus(`Connecting to nvim at ${socketPath}...`);
+			const conn = await connectNvim(socketPath);
+			const { client, exec, ops } = conn;
+			this._nvimConnection = conn;
+
+			// 1. Override standard tools with nvim-backed operations.
+			//    This makes read/write/edit/grep/find/ls/bash all go through nvim.
+			const toolNames = ["read", "write", "edit", "grep", "find", "ls", "bash"] as const;
+			const nvimOps = nvimToolOps(() => (client.connected ? client : undefined));
+			for (const name of toolNames) {
+				const options: ToolsOptions = {};
+				switch (name) {
+					case "read":
+						options.read = { operations: nvimOps.read };
+						break;
+					case "write":
+						options.write = { operations: nvimOps.write };
+						break;
+					case "edit":
+						options.edit = { operations: nvimOps.edit };
+						break;
+					case "grep":
+						options.grep = { operations: nvimOps.grep };
+						break;
+					case "find":
+						options.find = { operations: nvimOps.find };
+						break;
+					case "ls":
+						options.ls = { operations: nvimOps.ls };
+						break;
+					case "bash":
+						options.bash = { operations: nvimOps.bash };
+						break;
+				}
+				const cwd = process.cwd();
+				const def = createToolDefinition(name, cwd, options);
+				this.session.registerAdditionalTool(def);
+			}
+
+			// 2. Register nvim-native tools (LSP, treesitter, search, config, buffers).
+			const cwd = process.cwd();
+			for (const tool of createNvimToolDefinitions(cwd, client)) {
+				this.session.registerAdditionalTool(tool);
+			}
+
+			this._nvimConnected = true;
+
+			// 3. Discover nvim environment and update system prompt.
+			try {
+				this.session.setSystemPrompt(await discoverNvim(exec));
+			} catch {}
+
+			// 4. Notify the model that nvim is connected with full tool list.
+			const nativeToolNames = [
+				"lsp_diagnostics", "lsp_references", "lsp_definition", "lsp_hover",
+				"ts_query", "buffers", "nvim_config", "nvim_search", "nvim_find_files",
+			];
+			await this.session.prompt(
+				`nvim connected. All file operations (read, write, edit, grep, find, ls) ` +
+				`now go through nvim so you see exactly what the user sees. ` +
+				`Additional nvim-native tools: ${nativeToolNames.join(", ")}. ` +
+				`Use nvim_exec/nvim_lua to control nvim directly. ` +
+				`Use nvim_config to inspect the nvim setup. ` +
+				`Use nvim_search/nvim_find_files for fuzzy/project search via telescope/fzf-lua/vimgrep.`,
+			);
+
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new DynamicBorder());
+			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "nvim connected")), 1, 0));
+			this.chatContainer.addChild(new Text(
+				`Socket: ${socketPath} | All file tools forwarded | LSP + treesitter + search tools active`,
+				1,
+				0,
+			));
+			this.ui.requestRender();
+			this.showStatus("");
+		} catch (e) {
+			this.showStatus(`Failed to connect: ${errorMessage(e)}`);
+		}
+	}
+
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
 		if (!searchTerm) {
 			this.showModelSelector();
@@ -4657,7 +4885,7 @@ export class InteractiveMode {
 	}
 
 	/** Build live data for the NuShell-style statusline. */
-	private getStatusLineData(): import("./components/status-line.ts").StatusLineData {
+	private getStatusLineData(): StatusLineData {
 		const state = this.session.state;
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
@@ -4681,16 +4909,69 @@ export class InteractiveMode {
 		}
 
 		return {
+			version: this.version,
+			updateAvailable: this.updateAvailable,
 			cwd: this.sessionManager.getCwd(),
-			gitBranch: undefined, // TODO: add git branch support
-			modelName: state.model?.id ?? "no-model",
+			gitStatus: this.getGitStatus(),
 			contextPercent,
 			contextWindow,
 			inputTokens,
 			outputTokens,
 			sessionCost: this.cumulativeSessionCost,
 			autoCompact: this.session.autoCompactionEnabled,
+			working: this.workingVisible,
 		};
+	}
+
+	private gitCache: { result: GitStatus; ts: number } | undefined;
+	private getGitStatus(): GitStatus | undefined {
+		const cwd = this.sessionManager.getCwd();
+		if (!cwd) return undefined;
+		// cache for 5s to avoid spamming git on every render tick
+		const now = Date.now();
+		if (this.gitCache && now - this.gitCache.ts < 5000) return this.gitCache.result;
+		try {
+			const exec = (args: string[]) => {
+				const r = child_process.spawnSync("git", args, { cwd, timeout: 2000 });
+				if (r.error || r.status !== 0) throw new Error();
+				return r.stdout.toString().trim();
+			};
+			const branch = exec(["rev-parse", "--abbrev-ref", "HEAD"]);
+			let ahead = 0,
+				behind = 0;
+			try {
+				const ab = exec(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+				const [beh, ah] = ab.split(/\s+/);
+				ahead = parseInt(ah ?? "0", 10) || 0;
+				behind = parseInt(beh ?? "0", 10) || 0;
+			} catch {
+				/* no upstream */
+			}
+			let added = 0,
+				deleted = 0;
+			try {
+				const diff = exec(["diff", "--numstat"]);
+				const staged = (() => {
+					try {
+						return exec(["diff", "--cached", "--numstat"]);
+					} catch {
+						return "";
+					}
+				})();
+				for (const line of `${diff}\n${staged}`.split("\n")) {
+					const parts = line.split(/\s+/);
+					added += parseInt(parts[0] ?? "0", 10) || 0;
+					deleted += parseInt(parts[1] ?? "0", 10) || 0;
+				}
+			} catch {
+				/* no changes */
+			}
+			const result: GitStatus = { branch, ahead, behind, added, deleted };
+			this.gitCache = { result, ts: now };
+			return result;
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
@@ -5126,6 +5407,15 @@ export class InteractiveMode {
 			};
 			return { component: selector, focus: selector };
 		});
+	}
+
+	private async switchToSession(sessionId: string, cwd: string): Promise<void> {
+		const sessionDir = this.sessionManager.getSessionDir();
+		const entries = await SessionManager.list(cwd, sessionDir);
+		const session = entries.find((s) => s.id === sessionId);
+		if (!session) return;
+		this.ui.setFocus(this.editor);
+		await this.handleResumeSession(session.path);
 	}
 
 	private showSessionSelector(): void {

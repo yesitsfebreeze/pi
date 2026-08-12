@@ -1,16 +1,17 @@
-import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { RoundedBox } from "./rounded-box.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
- * Component that renders a user message
+ * Component that renders a user message inside a heavy rounded border.
  */
-export class UserMessageComponent extends Container {
+export class UserMessageComponent extends RoundedBox {
 	private text: string;
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
@@ -22,7 +23,7 @@ export class UserMessageComponent extends Container {
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 	) {
-		super();
+		super("light", (s) => theme.fg("borderAccent", s));
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
@@ -37,11 +38,10 @@ export class UserMessageComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
-		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
-		contentBox.addChild(
+		this.addChild(
 			new Markdown(
 				this.text,
-				0,
+				this.outputPad,
 				0,
 				this.markdownTheme,
 				{
@@ -54,14 +54,11 @@ export class UserMessageComponent extends Container {
 				},
 			),
 		);
-		this.addChild(contentBox);
 	}
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		if (lines.length === 0) {
-			return lines;
-		}
+		if (lines.length === 0) return lines;
 
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];

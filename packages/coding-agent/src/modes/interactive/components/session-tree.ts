@@ -1,6 +1,7 @@
 import {
 	type Component,
 	type Focusable,
+	getKeybindings,
 	TreeList,
 	type TreeListTheme,
 	type TreeNode,
@@ -75,6 +76,11 @@ export class SessionTreeComponent implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		const kb = getKeybindings();
+		if (kb && kb.matches(data, "app.session.focusTree")) {
+			if (this.onFocusLeave) this.onFocusLeave();
+			return;
+		}
 		this.tree.handleInput(data);
 	}
 

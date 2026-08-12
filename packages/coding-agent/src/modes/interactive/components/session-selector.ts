@@ -473,7 +473,7 @@ class SessionList implements Component, Focusable {
 			}
 
 			// Cursor
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+			const cursor = isSelected ? "  " : "  ";
 
 			// Calculate available width for message
 			const prefixWidth = visibleWidth(prefix);

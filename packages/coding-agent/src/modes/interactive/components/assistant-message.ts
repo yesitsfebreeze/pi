@@ -9,7 +9,8 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
- * Component that renders a complete assistant message
+ * Component that renders a complete assistant message — no border.
+ * Only user messages (heavy) and plugin notifications (DynamicBorder) get borders.
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
@@ -38,7 +39,6 @@ export class AssistantMessageComponent extends Container {
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
 
-		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
 

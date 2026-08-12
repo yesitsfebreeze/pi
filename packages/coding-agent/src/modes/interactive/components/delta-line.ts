@@ -26,7 +26,6 @@ export class DeltaLineComponent implements Component {
 	private readonly durationMs: number;
 	private readonly modelName: string;
 	private readonly thinkingLevel: string | undefined;
-	private readonly sessionCost: number;
 	private readonly isError: boolean;
 	private readonly errorLabel?: string;
 
@@ -35,7 +34,6 @@ export class DeltaLineComponent implements Component {
 		durationMs: number;
 		modelName: string;
 		thinkingLevel?: string;
-		sessionCost: number;
 		isError?: boolean;
 		errorLabel?: string;
 	}) {
@@ -43,7 +41,6 @@ export class DeltaLineComponent implements Component {
 		this.durationMs = opts.durationMs;
 		this.modelName = opts.modelName;
 		this.thinkingLevel = opts.thinkingLevel;
-		this.sessionCost = opts.sessionCost;
 		this.isError = opts.isError ?? false;
 		this.errorLabel = opts.errorLabel;
 	}
@@ -114,14 +111,6 @@ export class DeltaLineComponent implements Component {
 			const reasoning = theme.fg("dim", `reasoning: ${this.thinkingLevel}`);
 			if (visibleWidth(fields.join(SEP) + SEP + reasoning) <= width) {
 				fields.push(reasoning);
-			}
-		}
-
-		// Cumulative session cost: bold green
-		if (this.sessionCost > 0) {
-			const totalCost = theme.bold(theme.fg("success", `total $${this.sessionCost.toFixed(3)}`));
-			if (visibleWidth(fields.join(SEP) + SEP + totalCost) <= width) {
-				fields.push(totalCost);
 			}
 		}
 
