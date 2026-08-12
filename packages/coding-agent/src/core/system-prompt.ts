@@ -22,6 +22,8 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Pre-loaded recipes. */
+	recipes?: Array<{ name: string; content: string }>;
 }
 
 /** Build the system prompt with tools, guidelines, and context */

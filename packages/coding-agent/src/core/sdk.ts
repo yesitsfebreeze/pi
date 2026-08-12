@@ -6,6 +6,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { createDoctorProbeToolDefinition } from "./doctor.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
@@ -380,7 +381,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		cwd,
 		scopedModels: options.scopedModels,
 		resourceLoader,
-		customTools: options.customTools,
+		customTools: [
+			...(options.customTools ?? []),
+			createDoctorProbeToolDefinition({
+				getExtensionRunner: () => extensionRunnerRef.current,
+			}),
+		],
 		modelRuntime,
 		initialActiveToolNames,
 		allowedToolNames,

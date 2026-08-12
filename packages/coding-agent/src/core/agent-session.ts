@@ -53,6 +53,7 @@ import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+import { applyDynamicSlim, computeLevel } from "./compaction/dynamic.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -64,6 +65,7 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
+import { buildCompactMessages, runCompaction, shouldCompact as shouldRunCompact } from "./compaction/running.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -108,6 +110,7 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import { createToolsToolDefinition } from "./tools/tools.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 // ============================================================================
@@ -365,6 +368,7 @@ export class AgentSession {
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
+	private _restoredTools = new Set<string>();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
@@ -373,6 +377,9 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
+
+	// Running LLM compaction state
+	private _runningCompaction = { summary: null as string | null, turnsSinceLastSummary: 0, totalCompacted: 0 };
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -599,8 +606,56 @@ export class AgentSession {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 		} finally {
+			this._applyDynamicSlimIfNeeded();
+			this._runningCompaction.turnsSinceLastSummary++;
+			this._maybeRunCompaction().catch(() => {});
 			this._resolveIdleWaitIfIdle();
 		}
+	}
+
+	/**
+	 * After enough turns, run an LLM-based summarization to keep the
+	 * context compact. Runs asynchronously — doesn't block the user.
+	 */
+	private async _maybeRunCompaction(): Promise<void> {
+		const toCompact = shouldRunCompact(this.agent.state.messages, this._runningCompaction);
+		if (!toCompact || toCompact.length === 0) return;
+		if (!this.model) return;
+
+		try {
+			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+			const lastUserIndex =
+				this.agent.state.messages
+					.map((m, i) => ({ m, i }))
+					.filter(({ m }) => m.role === "user")
+					.pop()?.i ?? 0;
+			const trailing = this.agent.state.messages.slice(lastUserIndex);
+
+			const result = await runCompaction(
+				toCompact,
+				requestModel,
+				{ apiKey, headers, env },
+				this._runningCompaction.summary,
+			);
+
+			this.agent.state.messages = buildCompactMessages(result.summary, trailing);
+			this._runningCompaction.summary = result.summary;
+			this._runningCompaction.totalCompacted += toCompact.length;
+			this._runningCompaction.turnsSinceLastSummary = 0;
+		} catch {
+			// Fail open — if summarization fails, keep the current messages
+		}
+	}
+
+	/** Apply progressive slimming to messages based on current context usage. */
+	private _applyDynamicSlimIfNeeded(): void {
+		const usage = this.getContextUsage();
+		if (!usage) return;
+		const percent = usage.percent;
+		if (percent === null) return;
+		const level = computeLevel(percent / 100);
+		if (!level) return;
+		this.agent.state.messages = applyDynamicSlim(this.agent.state.messages, level);
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -885,6 +940,11 @@ export class AgentSession {
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
+	setSystemPrompt(prompt: string): void {
+		this._systemPromptOverride = prompt;
+		this.agent.state.systemPrompt = prompt;
+	}
+
 	get systemPrompt(): string {
 		return this.agent.state.systemPrompt;
 	}
@@ -900,6 +960,36 @@ export class AgentSession {
 	 */
 	getActiveToolNames(): string[] {
 		return this.agent.state.tools.map((t) => t.name);
+	}
+
+	/** Tool names that are currently deferred (registered but schema withheld). */
+	getDeferredToolNames(): string[] {
+		const deferred = new Set<string>();
+		for (const [name] of this._toolDefinitions) {
+			if (this._toolDefinitions.get(name)?.definition.rare && !this._restoredTools.has(name)) {
+				deferred.add(name);
+			}
+		}
+		return [...deferred].sort();
+	}
+
+	/** Restore one or more deferred tools to the active surface. */
+	restoreTools(names: string[]): string[] {
+		const restored: string[] = [];
+		for (const name of names) {
+			if (this._toolDefinitions.has(name)) {
+				this._restoredTools.add(name);
+				restored.push(name);
+			}
+		}
+		if (restored.length > 0) {
+			const current = this.getActiveToolNames();
+			for (const name of restored) {
+				if (!current.includes(name)) current.push(name);
+			}
+			this._refreshToolRegistry({ activeToolNames: current });
+		}
+		return restored;
 	}
 
 	/**
@@ -2552,7 +2642,16 @@ export class AgentSession {
 			}
 		}
 
-		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+		this.setActiveToolsByName(this._filterDeferredTools([...new Set(nextActiveToolNames)]));
+	}
+
+	/** Filter out deferred (rare) tools from the active set. */
+	private _filterDeferredTools(names: string[]): string[] {
+		return names.filter((name) => {
+			const entry = this._toolDefinitions.get(name);
+			if (!entry?.definition.rare) return true;
+			return this._restoredTools.has(name);
+		});
 	}
 
 	private _buildRuntime(options: {
@@ -2582,6 +2681,14 @@ export class AgentSession {
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
 
+		// Inject the tools meta-tool — always hot, never deferred.
+		const toolsDef = createToolsToolDefinition({
+			getDeferredNames: () => this.getDeferredToolNames(),
+			getAllToolNames: () => [...this._toolDefinitions.keys()],
+			restoreTools: (names: string[]) => this.restoreTools(names),
+		});
+		this._baseToolDefinitions.set("tools", toolsDef);
+
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
 			for (const [name, value] of options.flagValues) {
@@ -2604,7 +2711,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: ["read", "bash", "edit", "write", "tools"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -3343,5 +3450,15 @@ export class AgentSession {
 	 */
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
+	}
+
+	/**
+	 * Register an additional tool definition at runtime.
+	 * Rebuilds the tool registry and system prompt. Safe to call before or after agent start.
+	 */
+	registerAdditionalTool(definition: ToolDefinition): void {
+		this._customTools.push(definition);
+		this._refreshToolRegistry();
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 	}
 }
