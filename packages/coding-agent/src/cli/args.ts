@@ -54,6 +54,8 @@ export interface Args {
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
 	unknownFlags: Map<string, boolean | string>;
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
+	/** Socket path for nvim headless mode */
+	nvimSocket?: string;
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -153,6 +155,8 @@ export function parseArgs(args: string[]): Args {
 			result.extensions.push(args[++i]);
 		} else if (arg === "--no-extensions" || arg === "-ne") {
 			result.noExtensions = true;
+		} else if (arg === "--nvim-socket" && i + 1 < args.length) {
+			result.nvimSocket = args[++i];
 		} else if (arg === "--skill" && i + 1 < args.length) {
 			result.skills = result.skills ?? [];
 			result.skills.push(args[++i]);

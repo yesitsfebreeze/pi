@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -46,6 +47,8 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
+import { connectNvim, discoverNvim, createNvimToolDefinitions, nvimToolOps } from "./core/nvim.ts";
+import { createToolDefinition } from "./core/tools/index.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -64,6 +67,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { errorMessage } from "./utils/error.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -918,6 +922,46 @@ export async function main(args: string[], options?: MainOptions) {
 			.refresh({ signal: controller.signal })
 			.catch(() => {})
 			.finally(() => clearTimeout(timeout));
+	}
+
+	// Nvim socket: connect to a running nvim at startup (CLI flag).
+	// For interactive use, prefer /nvim inside the TUI instead.
+	if (parsed.nvimSocket) {
+		printTimings();
+		try {
+			const conn = await connectNvim(parsed.nvimSocket);
+			const { client, exec, ops } = conn;
+
+			// Override standard tools with nvim-backed operations.
+			const toolNames = ["read", "write", "edit", "grep", "find", "ls", "bash"] as const;
+			const nvimOps = nvimToolOps(() => (client.connected ? client : undefined));
+			for (const name of toolNames) {
+				const options: Record<string, unknown> = {};
+				switch (name) {
+					case "read": options.read = { operations: nvimOps.read }; break;
+					case "write": options.write = { operations: nvimOps.write }; break;
+					case "edit": options.edit = { operations: nvimOps.edit }; break;
+					case "grep": options.grep = { operations: nvimOps.grep }; break;
+					case "find": options.find = { operations: nvimOps.find }; break;
+					case "ls": options.ls = { operations: nvimOps.ls }; break;
+					case "bash": options.bash = { operations: nvimOps.bash }; break;
+				}
+				const def = createToolDefinition(name, process.cwd(), options as any);
+				session.registerAdditionalTool(def);
+			}
+
+			// Register nvim-native tools.
+			for (const tool of createNvimToolDefinitions(process.cwd(), client)) {
+				session.registerAdditionalTool(tool);
+			}
+
+			try {
+				session.setSystemPrompt(await discoverNvim(exec));
+			} catch {}
+			console.log(`[nvim] Connected to ${parsed.nvimSocket}`);
+		} catch (e) {
+			console.error(`[nvim] Failed to connect: ${errorMessage(e)}`);
+		}
 	}
 
 	if (appMode === "rpc") {
