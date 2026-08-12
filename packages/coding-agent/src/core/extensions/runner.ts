@@ -48,6 +48,7 @@ import type {
 	ProjectTrustEventResult,
 	ProviderConfig,
 	RegisteredCommand,
+	RegisteredHealthCheck,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,
@@ -469,6 +470,17 @@ export class ExtensionRunner {
 			}
 		}
 		return undefined;
+	}
+
+	/** Get all health checks registered by extensions (last registration per name wins). */
+	getAllHealthChecks(): RegisteredHealthCheck[] {
+		const byName = new Map<string, RegisteredHealthCheck>();
+		for (const ext of this.extensions) {
+			for (const [name, check] of ext.healthChecks) {
+				byName.set(name, check);
+			}
+		}
+		return Array.from(byName.values());
 	}
 
 	getFlags(): Map<string, ExtensionFlag> {

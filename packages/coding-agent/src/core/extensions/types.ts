@@ -54,6 +54,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 export type { CustomMessage };
+
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type {
@@ -465,6 +466,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 
+	/**
+	 * When true, the tool is registered but its schema is initially withheld from the
+	 * provider request (deferred). The model can restore it via the `tools` meta-tool
+	 * (`tools action=on <name>`). Use for tools that are rarely needed — saves schema
+	 * bytes on every turn.
+	 */
+	rare?: boolean;
+
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown) => Static<TParams>;
 
@@ -764,7 +773,7 @@ export interface ToolExecutionStartEvent {
 	type: "tool_execution_start";
 	toolCallId: string;
 	toolName: string;
-	args: any;
+	args: Record<string, unknown>;
 }
 
 /** Fired during tool execution with partial/streaming output */
@@ -772,8 +781,8 @@ export interface ToolExecutionUpdateEvent {
 	type: "tool_execution_update";
 	toolCallId: string;
 	toolName: string;
-	args: any;
-	partialResult: any;
+	args: Record<string, unknown>;
+	partialResult: AgentToolResult<unknown>;
 }
 
 /** Fired when a tool finishes executing */
@@ -781,7 +790,7 @@ export interface ToolExecutionEndEvent {
 	type: "tool_execution_end";
 	toolCallId: string;
 	toolName: string;
-	result: any;
+	result: AgentToolResult<unknown>;
 	isError: boolean;
 }
 
@@ -1242,7 +1251,7 @@ export interface ExtensionAPI {
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-		on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 
 	/** Get the current working directory. */
 	getCwd?(): string;
@@ -1297,6 +1306,9 @@ export interface ExtensionAPI {
 
 	/** Register a custom renderer for CustomEntry. Custom entries do not participate in LLM context. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
+
+	/** Register a health check the doctor probe will run alongside its built-in checks. */
+	registerHealthCheck(check: HealthCheck): void;
 
 	// =========================================================================
 	// Actions
@@ -1698,6 +1710,31 @@ export interface ExtensionCommandContextActions {
  */
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
 
+export type HealthCheckStatus = "FAIL" | "DIRTY" | "PASS" | "OK" | "SKIP";
+
+/** Result returned by an extension-registered health check. */
+export interface HealthCheckResult {
+	status: HealthCheckStatus;
+	detail: string;
+}
+
+/** A self-check that extensions can register to participate in the doctor probe. */
+export interface HealthCheck {
+	/** Unique check name shown in the doctor table (e.g. "myext:config"). */
+	name: string;
+	/** Optional human-readable description. */
+	description?: string;
+	/** Timeout in milliseconds. Defaults to 10000 (10s). */
+	timeoutMs?: number;
+	/** Run the check. Throwing is treated as a FAIL with the error message. */
+	run: (ctx: ExtensionContext) => Promise<HealthCheckResult> | HealthCheckResult;
+}
+
+export interface RegisteredHealthCheck {
+	check: HealthCheck;
+	sourceInfo: SourceInfo;
+}
+
 /** Loaded extension with all registered items. */
 export interface Extension {
 	path: string;
@@ -1712,6 +1749,7 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	healthChecks: Map<string, RegisteredHealthCheck>;
 }
 
 /** Result of loading extensions. */

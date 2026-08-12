@@ -38,6 +38,7 @@ import type {
 	ExtensionAPI,
 	ExtensionFactory,
 	ExtensionRuntime,
+	HealthCheck,
 	LoadExtensionsResult,
 	MarkdownTransformer,
 	MessageRenderer,
@@ -317,6 +318,11 @@ function createExtensionAPI(
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
 		},
 
+		registerHealthCheck(check: HealthCheck): void {
+			runtime.assertActive();
+			extension.healthChecks.set(check.name, { check, sourceInfo: extension.sourceInfo });
+		},
+
 		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
 			runtime.assertActive();
@@ -484,6 +490,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+		healthChecks: new Map(),
 	};
 }
 

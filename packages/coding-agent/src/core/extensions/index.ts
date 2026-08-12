@@ -86,6 +86,9 @@ export type {
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
+	HealthCheck,
+	HealthCheckResult,
+	HealthCheckStatus,
 	InlineExtension,
 	// Events - Input
 	InputEvent,
@@ -117,6 +120,7 @@ export type {
 	ReadToolResultEvent,
 	// Commands
 	RegisteredCommand,
+	RegisteredHealthCheck,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,

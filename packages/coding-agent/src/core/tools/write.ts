@@ -215,8 +215,8 @@ export function createWriteToolDefinition(
 				if (blocked) {
 					throw new Error(
 						`Write blocked: ${path} is outside the allowed write scope. ` +
-						`Allowed prefix(es): ${options.writeScope.join(", ")}. ` +
-						`Use writeScope setting to adjust.`,
+							`Allowed prefix(es): ${options.writeScope.join(", ")}. ` +
+							`Use writeScope setting to adjust.`,
 					);
 				}
 			}

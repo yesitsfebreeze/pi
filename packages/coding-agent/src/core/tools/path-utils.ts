@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { access } from "node:fs/promises";
-import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { isAbsolute, relative } from "node:path";
+import { normalizePath, resolvePath } from "../../utils/paths.ts";
 
 /** Cache of resolved git roots, keyed by cwd. Lazy, one-shot per session. */
 const gitRootCache = new Map<string, string | undefined>();
@@ -25,10 +25,7 @@ export function resolveGitRoot(cwd: string): string | undefined {
  * Check whether an absolute path is within an allowed scope prefix.
  * Returns the scope prefix if the path is outside all prefixes, undefined if allowed.
  */
-export function checkWriteScope(
-	absolutePath: string,
-	scopePrefixes: string[],
-): string | undefined {
+export function checkWriteScope(absolutePath: string, scopePrefixes: string[]): string | undefined {
 	for (const prefix of scopePrefixes) {
 		const rel = relative(prefix, absolutePath);
 		if (!rel.startsWith("..") && !isAbsolute(rel)) return undefined;
@@ -40,7 +37,7 @@ export function checkWriteScope(
 const REDIR_PATTERNS = [
 	/(?<![\d\->])&?\d?>>?\s*([^\s;&|<>()]+)/g,
 	/\btee\b(?:\s+-[a-zA-Z]*)*\s+([^\s;&|<>()]+)/g,
-	/\b(?:cp|mv|rsync|install|ln)\b(?:\s+-[a-zA-Z0-9./]+)*(?<!\-t|\-T)\s+[^\s;&|<>()-]+\s+([^\s;&|<>()]+)/g,
+	/\b(?:cp|mv|rsync|install|ln)\b(?:\s+-[a-zA-Z0-9./]+)*(?<!-t|-T)\s+[^\s;&|<>()-]+\s+([^\s;&|<>()]+)/g,
 	/\bdd\b[^;&|]*?\bof=([^\s;&|<>()]+)/g,
 	/\bsed\s+(-[^\s;&|]*i[^\s;&|]*)((?:\s+[^\s;&|<>()]+)+)/g,
 ];
