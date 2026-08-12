@@ -4555,6 +4555,63 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	/**
+	 * Shows a selector in the bottom list pane (replacing the session tree)
+	 * instead of replacing the editor. The editor stays mounted above; the
+	 * pane windows the selector's full render via a ScrollView. The last-line
+	 * context bar reflects the selector's title + shortcuts while open, and
+	 * the sticky view header above the pane shows the same title.
+	 */
+	private showSelectorInPane(
+		create: (done: () => void) => {
+			component: Component;
+			focus: Component;
+			dispose?: () => void;
+			title?: string;
+			shortcuts?: string;
+		},
+	): void {
+		const token = {};
+		let dispose: (() => void) | undefined;
+		const restorePane = () => {
+			this.bottomPaneContainer.clear();
+			this.bottomPaneContainer.addChild(this.bottomListHost);
+		};
+		const done = () => {
+			dispose?.();
+			if (this.activeSelectorToken !== token) return;
+			this.activeSelectorToken = undefined;
+			this.activeSelectorDispose = undefined;
+			restorePane();
+			this.syncContextBar();
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
+		const created = create(done);
+		dispose = created.dispose;
+		this.disposeActiveSelector();
+		this.activeSelectorToken = token;
+		this.activeSelectorDispose = dispose;
+
+		// Swap the sessions tree host out and mount the selector (in a ScrollView)
+		// so the fixed pane windows it and scrolls with the wheel.
+		const scroll = new TuiLayouts.ScrollView(created.component, {
+			follow: "none",
+			overscroll: "chain",
+			scrollbar: this.settingsManager.getFullscreenScrollbar(),
+			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
+		});
+		this.bottomPaneContainer.clear();
+		this.bottomPaneContainer.addChild(scroll);
+
+		// Reflect the selector in the sticky header + last-line context bar.
+		if (created.title) this.viewHeader.setTitle(created.title);
+		if (created.shortcuts !== undefined) this.contextBar.setView(created.title ?? "", created.shortcuts);
+
+		this.ui.setFocus(created.focus);
+		this.ui.requestRender();
+	}
+
 	private showSettingsSelector(): void {
 		this.showSelector((done) => {
 			let selector: SettingsSelectorComponent | undefined;
@@ -5578,7 +5635,7 @@ export class InteractiveMode {
 	}
 
 	private showSessionSelector(): void {
-		this.showSelector((done) => {
+		this.showSelectorInPane((done) => {
 			const selector = new SessionSelectorComponent(
 				(onProgress) =>
 					SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionDir(), onProgress),
@@ -5611,7 +5668,15 @@ export class InteractiveMode {
 
 				this.sessionManager.getSessionFile(),
 			);
-			return { component: selector, focus: selector };
+			return {
+				component: selector,
+				focus: selector,
+				title: "Resume session",
+				shortcuts:
+					keyHint("tui.select.confirm", "resume") +
+					theme.fg("muted", "  ") +
+					keyHint("tui.select.cancel", "cancel"),
+			};
 		});
 	}
 
