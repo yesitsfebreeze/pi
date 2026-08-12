@@ -4,17 +4,17 @@
 
 ### Fixed
 
-- Fixed `streamProxy()` dropping finalized tool-call metadata such as OpenAI Responses namespaces ([#7709](https://github.com/earendil-works/pi/issues/7709)).
+- Fixed `streamProxy()` dropping finalized tool-call metadata such as OpenAI Responses namespaces ([#7709](https://github.com/yesitsfebreeze/pi/issues/7709)).
 
 ## [0.84.1] - 2026-08-07
 
 ### Added
 
-- Added `BeforeToolCallResult.terminate` so blocked tool calls can participate in the existing batch early-termination rule ([#7715](https://github.com/earendil-works/pi/pull/7715) by [@muyiyr](https://github.com/muyiyr)).
+- Added `BeforeToolCallResult.terminate` so blocked tool calls can participate in the existing batch early-termination rule ([#7715](https://github.com/yesitsfebreeze/pi/pull/7715) by [@muyiyr](https://github.com/muyiyr)).
 
 ### Fixed
 
-- Fixed `Agent.reset()` clearing transcript and runtime state during active runs; it now rejects until the agent is idle ([#7717](https://github.com/earendil-works/pi/pull/7717) by [@wesleyzhangwq](https://github.com/wesleyzhangwq)).
+- Fixed `Agent.reset()` clearing transcript and runtime state during active runs; it now rejects until the agent is idle ([#7717](https://github.com/yesitsfebreeze/pi/pull/7717) by [@wesleyzhangwq](https://github.com/wesleyzhangwq)).
 
 ## [0.84.0] - 2026-08-06
 
@@ -23,23 +23,23 @@
 - Replaced the legacy harness session model with the v4 lane-based `Session`, `SessionStorage`, and `SessionRepo` APIs, including durable operation records, global facts, shared sequence numbers, and tree-scoped lane views.
 - Promoted the v2 session and `AgentHarness` API from the experimental entrypoint to the default package export and removed the experimental subpaths.
 - Removed the legacy JSONL and in-memory repository APIs. Use the v4 `JsonlSessionRepo` or `InMemorySessionRepo`, both implementing the new `SessionRepo` contract.
-- Added the required `FileSystem.renameFile()` operation to harness execution environments for atomic JSONL publication; custom file-system implementations must provide same-filesystem replacement semantics ([#7707](https://github.com/earendil-works/pi/pull/7707) by [@davidbrai](https://github.com/davidbrai)).
+- Added the required `FileSystem.renameFile()` operation to harness execution environments for atomic JSONL publication; custom file-system implementations must provide same-filesystem replacement semantics ([#7707](https://github.com/yesitsfebreeze/pi/pull/7707) by [@davidbrai](https://github.com/davidbrai)).
 
 ### Added
 
 - Added typed AI-request and harness telemetry schemas, their combined schema tuple, callback helpers, and a generated schema reference.
 - Added bounded `Session.findEntriesOnBranch()` and `findEntryOnBranch()` queries with explicit traversal, filtering, ordering, and limit options.
 - Added a compile-complete `AgentHarness` v2 scaffold; unfinished operation paths reject with `HarnessNotImplemented` while durable execution is implemented.
-- Added `JsonlSessionRepo`, a v4 append-only JSONL session repository with metadata validation and shared storage semantics ([#7611](https://github.com/earendil-works/pi/pull/7611) by [@davidbrai](https://github.com/davidbrai)).
-- Added indexed `Session.findOpenOperations()` recovery queries and `RecordQuery.operationKind` filtering ([#7646](https://github.com/earendil-works/pi/pull/7646)).
-- Added `AgentOptions.shouldStopAfterTurn` for gracefully stopping after a completed turn before queued messages or another model call are processed. See [Agent Options](README.md#agent-options) ([#7367](https://github.com/earendil-works/pi/pull/7367) by [@acmerfight](https://github.com/acmerfight)).
-- Added proxy forwarding for arbitrary OpenAI-compatible `samplingParams` ([#7568](https://github.com/earendil-works/pi/pull/7568) by [@mrexodia](https://github.com/mrexodia)).
+- Added `JsonlSessionRepo`, a v4 append-only JSONL session repository with metadata validation and shared storage semantics ([#7611](https://github.com/yesitsfebreeze/pi/pull/7611) by [@davidbrai](https://github.com/davidbrai)).
+- Added indexed `Session.findOpenOperations()` recovery queries and `RecordQuery.operationKind` filtering ([#7646](https://github.com/yesitsfebreeze/pi/pull/7646)).
+- Added `AgentOptions.shouldStopAfterTurn` for gracefully stopping after a completed turn before queued messages or another model call are processed. See [Agent Options](README.md#agent-options) ([#7367](https://github.com/yesitsfebreeze/pi/pull/7367) by [@acmerfight](https://github.com/acmerfight)).
+- Added proxy forwarding for arbitrary OpenAI-compatible `samplingParams` ([#7568](https://github.com/yesitsfebreeze/pi/pull/7568) by [@mrexodia](https://github.com/mrexodia)).
 
 ### Fixed
 
 - Fixed Windows path handling for `NodeExecutionEnv` file basenames, recursive skill loading, and prompt template names.
 - Fixed `JsonlSessionRepo` enforcing session IDs globally across working directories; IDs are now unique within each working directory.
-- Fixed JSONL session forks and torn-tail repairs to publish atomically, avoiding partially written or corrupted sessions after interrupted writes ([#7707](https://github.com/earendil-works/pi/pull/7707) by [@davidbrai](https://github.com/davidbrai)).
+- Fixed JSONL session forks and torn-tail repairs to publish atomically, avoiding partially written or corrupted sessions after interrupted writes ([#7707](https://github.com/yesitsfebreeze/pi/pull/7707) by [@davidbrai](https://github.com/davidbrai)).
 
 ## [0.83.0] - 2026-07-29
 
@@ -61,29 +61,29 @@
 
 ### Fixed
 
-- Fixed compaction and branch-summary requests to use fresh routing session IDs with prompt caching disabled where supported ([#6618](https://github.com/earendil-works/pi/pull/6618) by [@tmustier](https://github.com/tmustier)).
+- Fixed compaction and branch-summary requests to use fresh routing session IDs with prompt caching disabled where supported ([#6618](https://github.com/yesitsfebreeze/pi/pull/6618) by [@tmustier](https://github.com/tmustier)).
 
 ## [0.81.1] - 2026-07-21
 
 ### Added
 
-- Added retry policy support and lifecycle events for compaction and branch-summary operations in `AgentHarness` ([#6901](https://github.com/earendil-works/pi/pull/6901) by [@davidbrai](https://github.com/davidbrai)).
+- Added retry policy support and lifecycle events for compaction and branch-summary operations in `AgentHarness` ([#6901](https://github.com/yesitsfebreeze/pi/pull/6901) by [@davidbrai](https://github.com/davidbrai)).
 
 ### Fixed
 
-- Restored the `Agent` `streamFn` option and host-configurable fallback for omitted agent-loop stream functions without reintroducing a `pi-ai/compat` dependency ([#6915](https://github.com/earendil-works/pi/issues/6915)).
+- Restored the `Agent` `streamFn` option and host-configurable fallback for omitted agent-loop stream functions without reintroducing a `pi-ai/compat` dependency ([#6915](https://github.com/yesitsfebreeze/pi/issues/6915)).
 
 ## [0.81.0] - 2026-07-21
 
 ### Breaking Changes
 
-- Changed `SessionStorage` to use `getPathToRootOrCompaction()`, require session name and statistics methods, support cursor-based entry reads, and store retained compaction tails as self-contained checkpoints ([#6594](https://github.com/earendil-works/pi/pull/6594) by [@cristinaponcela](https://github.com/cristinaponcela)).
-- Moved the `uuidv7` export to `@earendil-works/pi-ai` ([#6834](https://github.com/earendil-works/pi/pull/6834) by [@xl0](https://github.com/xl0)).
-- Replaced the optional `Agent` `streamFn` fallback with a required `streamFunction` and made low-level loop stream functions required, preventing `@earendil-works/pi-ai/compat` and all built-in providers from entering selective-provider bundles ([#6851](https://github.com/earendil-works/pi/issues/6851)).
+- Changed `SessionStorage` to use `getPathToRootOrCompaction()`, require session name and statistics methods, support cursor-based entry reads, and store retained compaction tails as self-contained checkpoints ([#6594](https://github.com/yesitsfebreeze/pi/pull/6594) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Moved the `uuidv7` export to `@earendil-works/pi-ai` ([#6834](https://github.com/yesitsfebreeze/pi/pull/6834) by [@xl0](https://github.com/xl0)).
+- Replaced the optional `Agent` `streamFn` fallback with a required `streamFunction` and made low-level loop stream functions required, preventing `@earendil-works/pi-ai/compat` and all built-in providers from entering selective-provider bundles ([#6851](https://github.com/yesitsfebreeze/pi/issues/6851)).
 
 ### Added
 
-- Added usage metadata to tool results, compaction entries, and branch summaries in the agent harness ([#6671](https://github.com/earendil-works/pi/pull/6671) by [@davidbrai](https://github.com/davidbrai)).
+- Added usage metadata to tool results, compaction entries, and branch summaries in the agent harness ([#6671](https://github.com/yesitsfebreeze/pi/pull/6671) by [@davidbrai](https://github.com/davidbrai)).
 
 ## [0.80.10] - 2026-07-16
 
@@ -95,7 +95,7 @@
 
 ### Added
 
-- Added `AgentToolResult.addedToolNames` propagation to `ToolResultMessage` so tools introduced by a result can be loaded from that transcript point onward ([#6474](https://github.com/earendil-works/pi-mono/pull/6474)).
+- Added `AgentToolResult.addedToolNames` propagation to `ToolResultMessage` so tools introduced by a result can be loaded from that transcript point onward ([#6474](https://github.com/yesitsfebreeze/pi/pull/6474)).
 
 ## [0.80.6] - 2026-07-09
 
@@ -110,16 +110,16 @@
 ### Added
 
 - Added configurable harness session context entry transforms and custom-entry message projectors.
-- Added custom metadata support in JSONL session headers ([#6417](https://github.com/earendil-works/pi/pull/6417) by [@ArcadiaLin](https://github.com/ArcadiaLin)).
-- Exported `InMemorySessionStorage` and `JsonlSessionStorage` ([#6435](https://github.com/earendil-works/pi/issues/6435)).
+- Added custom metadata support in JSONL session headers ([#6417](https://github.com/yesitsfebreeze/pi/pull/6417) by [@ArcadiaLin](https://github.com/ArcadiaLin)).
+- Exported `InMemorySessionStorage` and `JsonlSessionStorage` ([#6435](https://github.com/yesitsfebreeze/pi/issues/6435)).
 
 ### Fixed
 
-- Fixed harness split-turn compaction to serialize summary requests so single-concurrency providers are not asked to run overlapping generations ([#5536](https://github.com/earendil-works/pi/issues/5536)).
-- Fixed harness tool calls from length-truncated assistant messages to fail instead of waiting for missing tool results ([#6285](https://github.com/earendil-works/pi/pull/6285)).
-- Fixed harness session ingestion to normalize `null` message content before context projection, avoiding crashes on lax imported transcripts ([#6343](https://github.com/earendil-works/pi/pull/6343)).
-- Fixed non-positive or oversized harness shell execution timeouts to fail with a clear validation error instead of being clamped to an immediate timeout ([#6181](https://github.com/earendil-works/pi/issues/6181)).
-- Fixed harness session storage short entry ids to use the random tail of the generated uuidv7 instead of the timestamp prefix, which was nearly constant between calls ([#6242](https://github.com/earendil-works/pi/issues/6242)).
+- Fixed harness split-turn compaction to serialize summary requests so single-concurrency providers are not asked to run overlapping generations ([#5536](https://github.com/yesitsfebreeze/pi/issues/5536)).
+- Fixed harness tool calls from length-truncated assistant messages to fail instead of waiting for missing tool results ([#6285](https://github.com/yesitsfebreeze/pi/pull/6285)).
+- Fixed harness session ingestion to normalize `null` message content before context projection, avoiding crashes on lax imported transcripts ([#6343](https://github.com/yesitsfebreeze/pi/pull/6343)).
+- Fixed non-positive or oversized harness shell execution timeouts to fail with a clear validation error instead of being clamped to an immediate timeout ([#6181](https://github.com/yesitsfebreeze/pi/issues/6181)).
+- Fixed harness session storage short entry ids to use the random tail of the generated uuidv7 instead of the timestamp prefix, which was nearly constant between calls ([#6242](https://github.com/yesitsfebreeze/pi/issues/6242)).
 
 ## [0.80.3] - 2026-06-30
 
@@ -150,8 +150,8 @@
 
 ### Fixed
 
-- Fixed harness session names to normalize newline characters before storing labels ([#5999](https://github.com/earendil-works/pi/pull/5999) by [@haoqixu](https://github.com/haoqixu)).
-- Fixed harness compaction estimates to ignore malformed all-zero assistant usage after truncated responses ([#5526](https://github.com/earendil-works/pi/pull/5526) by [@dmmulroy](https://github.com/dmmulroy)).
+- Fixed harness session names to normalize newline characters before storing labels ([#5999](https://github.com/yesitsfebreeze/pi/pull/5999) by [@haoqixu](https://github.com/haoqixu)).
+- Fixed harness compaction estimates to ignore malformed all-zero assistant usage after truncated responses ([#5526](https://github.com/yesitsfebreeze/pi/pull/5526) by [@dmmulroy](https://github.com/dmmulroy)).
 
 ## [0.79.10] - 2026-06-22
 
@@ -159,13 +159,13 @@
 
 ### Fixed
 
-- Fixed Node execution environment commands through legacy WSL `bash.exe` to pass scripts over stdin so shell variables expand in the target bash ([#5893](https://github.com/earendil-works/pi/issues/5893)).
+- Fixed Node execution environment commands through legacy WSL `bash.exe` to pass scripts over stdin so shell variables expand in the target bash ([#5893](https://github.com/yesitsfebreeze/pi/issues/5893)).
 
 ## [0.79.8] - 2026-06-19
 
 ### Added
 
-- Added `@earendil-works/pi-agent-core/base` for bundlers that want to pair the agent core with selective `@earendil-works/pi-ai/base` provider registration ([#5348](https://github.com/earendil-works/pi/pull/5348) by [@FredKSchott](https://github.com/FredKSchott)).
+- Added `@earendil-works/pi-agent-core/base` for bundlers that want to pair the agent core with selective `@earendil-works/pi-ai/base` provider registration ([#5348](https://github.com/yesitsfebreeze/pi/pull/5348) by [@FredKSchott](https://github.com/FredKSchott)).
 
 ## [0.79.7] - 2026-06-18
 
@@ -181,7 +181,7 @@
 
 ### Fixed
 
-- Fixed late tool progress callbacks after tool settlement to be ignored instead of emitting stale `tool_execution_update` events ([#5573](https://github.com/earendil-works/pi/issues/5573)).
+- Fixed late tool progress callbacks after tool settlement to be ignored instead of emitting stale `tool_execution_update` events ([#5573](https://github.com/yesitsfebreeze/pi/issues/5573)).
 
 ## [0.79.1] - 2026-06-09
 
@@ -189,7 +189,7 @@
 
 ### Fixed
 
-- Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/earendil-works/pi/issues/5401)).
+- Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/yesitsfebreeze/pi/issues/5401)).
 
 ## [0.78.1] - 2026-06-04
 
@@ -209,7 +209,7 @@
 
 ### Fixed
 
-- Fixed context token estimates to count user image attachments consistently with tool result images ([#4983](https://github.com/earendil-works/pi/issues/4983)).
+- Fixed context token estimates to count user image attachments consistently with tool result images ([#4983](https://github.com/yesitsfebreeze/pi/issues/4983)).
 
 ## [0.75.5] - 2026-05-23
 
@@ -222,9 +222,9 @@
 
 ### Fixed
 
-- Fixed tool-call preflight to stop preparing sibling tool calls after the run is aborted ([#4276](https://github.com/earendil-works/pi/issues/4276)).
-- Fixed tail truncation for oversized single-line output that ends with a trailing newline ([#4715](https://github.com/earendil-works/pi/issues/4715)).
-- Fixed Windows Node execution environment command spawns to hide helper console windows from background processes ([#4699](https://github.com/earendil-works/pi/issues/4699)).
+- Fixed tool-call preflight to stop preparing sibling tool calls after the run is aborted ([#4276](https://github.com/yesitsfebreeze/pi/issues/4276)).
+- Fixed tail truncation for oversized single-line output that ends with a trailing newline ([#4715](https://github.com/yesitsfebreeze/pi/issues/4715)).
+- Fixed Windows Node execution environment command spawns to hide helper console windows from background processes ([#4699](https://github.com/yesitsfebreeze/pi/issues/4699)).
 
 ## [0.75.3] - 2026-05-18
 
