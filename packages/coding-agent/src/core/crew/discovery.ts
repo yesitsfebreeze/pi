@@ -10,9 +10,10 @@
  * Subsequent surveys are incremental: only regions whose git watermark
  * changed since the last survey are re-discovered.
  */
+
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -61,11 +62,11 @@ function gitHead(cwd: string): string {
 
 function filesChangedSince(cwd: string, since: string): number {
 	try {
-		const out = execFileSync(
-			"git",
-			["diff", "--name-only", `${since}..HEAD`],
-			{ cwd, encoding: "utf8", timeout: 5000 },
-		);
+		const out = execFileSync("git", ["diff", "--name-only", `${since}..HEAD`], {
+			cwd,
+			encoding: "utf8",
+			timeout: 5000,
+		});
 		return out.trim().split("\n").filter(Boolean).length;
 	} catch {
 		return 0;
@@ -77,11 +78,11 @@ function globsChanged(cwd: string, globs: string[], since: string): boolean {
 		// Fast path: if any file changed since the watermark, check globs
 		if (filesChangedSince(cwd, since) === 0) return false;
 		// Check changed files against each glob
-		const changed = execFileSync(
-			"git",
-			["diff", "--name-only", `${since}..HEAD`],
-			{ cwd, encoding: "utf8", timeout: 5000 },
-		);
+		const changed = execFileSync("git", ["diff", "--name-only", `${since}..HEAD`], {
+			cwd,
+			encoding: "utf8",
+			timeout: 5000,
+		});
 		const paths = changed.trim().split("\n").filter(Boolean);
 		return paths.some((p) => globs.some((g) => p.startsWith(g.replace(/\/$/, ""))));
 	} catch {
@@ -162,14 +163,17 @@ export function generateManifest(cwd: string): NodeTemplate[] {
 export function checkBudget(cwd: string): string | null {
 	const map = readMap(cwd);
 	if (map && map.nodes.length > MAX_NODES) {
-		return `map.json has ${map.nodes.length} nodes (limit: ${MAX_NODES}). ` +
-			"Prune stale nodes or increase MAX_NODES.";
+		return (
+			`map.json has ${map.nodes.length} nodes (limit: ${MAX_NODES}). ` + "Prune stale nodes or increase MAX_NODES."
+		);
 	}
 	try {
 		const manifest = generateManifest(cwd);
 		if (manifest.length > MAX_NODES) {
-			return `${manifest.length} candidate regions (limit: ${MAX_NODES}). ` +
-				"Narrow the manifest or increase MAX_NODES.";
+			return (
+				`${manifest.length} candidate regions (limit: ${MAX_NODES}). ` +
+				"Narrow the manifest or increase MAX_NODES."
+			);
 		}
 	} catch {
 		// can't check — allow
@@ -197,9 +201,7 @@ export function planDiscovery(cwd: string): DiscoveryTask[] {
 	const head = gitHead(cwd);
 	const existing = readMap(cwd);
 	const manifest = generateManifest(cwd);
-	const existingById = new Map(
-		(existing?.nodes ?? []).map((n) => [n.id, n]),
-	);
+	const existingById = new Map((existing?.nodes ?? []).map((n) => [n.id, n]));
 
 	return manifest.map((node): DiscoveryTask => {
 		const prev = existingById.get(node.id);
@@ -235,11 +237,7 @@ export function planDiscovery(cwd: string): DiscoveryTask[] {
 // ---------------------------------------------------------------------------
 // Map update after a single-node survey
 // ---------------------------------------------------------------------------
-export function updateNode(
-	cwd: string,
-	nodeId: string,
-	notePath: string,
-): DiscoveryMap | null {
+export function updateNode(cwd: string, nodeId: string, notePath: string): DiscoveryMap | null {
 	const map = readMap(cwd) ?? { version: 1, nodes: [] };
 	const head = gitHead(cwd);
 	const idx = map.nodes.findIndex((n) => n.id === nodeId);

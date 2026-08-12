@@ -84,8 +84,7 @@ export function load(repo: string): number {
 		try {
 			const m = JSON.parse(readFileSync(meta, "utf8")) as Record<string, unknown>;
 			if (!m?.handle || !m?.sessionId) continue;
-			const state: string =
-				m.state === "running" || m.state === "queued" ? "interrupted" : String(m.state);
+			const state: string = m.state === "running" || m.state === "queued" ? "interrupted" : String(m.state);
 			runs.set(String(m.handle), {
 				handle: String(m.handle),
 				agent: String(m.agent ?? "worker"),
@@ -206,9 +205,7 @@ function briefing(spec: CrewSpec, handle: string): string {
 
 function buildArgs(run: CrewRun, spec: CrewSpec, promptFile: string): string[] {
 	const p = spec.profile;
-	const args: string[] = [
-		"--mode", "json", "-p", "--session-id", run.sessionId, "--name", `crew:${run.handle}`,
-	];
+	const args: string[] = ["--mode", "json", "-p", "--session-id", run.sessionId, "--name", `crew:${run.handle}`];
 	const model = spec.model ?? p.model;
 	if (model) args.push("--model", model);
 	if (p.thinking) args.push("--thinking", p.thinking);
@@ -374,11 +371,7 @@ export function start(spec: CrewSpec): { run?: CrewRun; error?: string } {
 	return { run };
 }
 
-export function resume(
-	run: CrewRun,
-	spec: CrewSpec,
-	message?: string,
-): { error?: string } {
+export function resume(run: CrewRun, spec: CrewSpec, message?: string): { error?: string } {
 	if (!resumable(run)) return { error: `${run.handle} is ${run.state} — stop it before resuming it` };
 
 	const file = join(run.dir, `resume-${run.resumes + 1}.md`);
@@ -421,9 +414,7 @@ function spawnRun(run: CrewRun, spec: CrewSpec): void {
 		env: {
 			...process.env,
 			PI_SCOPES: [run.handle, ...(spec.scopes ?? [])].join(","),
-			...(spec.profile.scope?.length
-				? { PI_WRITE_SCOPE: spec.profile.scope.join(":") }
-				: {}),
+			...(spec.profile.scope?.length ? { PI_WRITE_SCOPE: spec.profile.scope.join(":") } : {}),
 			PI_DOING: `crew ${run.agent}: ${run.task.split("\n")[0].slice(0, 120)}`,
 			CREW_HANDLE: run.handle,
 			CREW_PARENT: spec.parentAddr,
@@ -594,7 +585,9 @@ export function events(run: CrewRun, lines: number): string {
 						return `→ ${ev.toolName} ${JSON.stringify(ev.args ?? {}).slice(0, 160)}`;
 					if (ev.type === "tool_execution_end") return `← ${ev.toolName}${ev.isError ? " (error)" : ""}`;
 					if (ev.type === "message_end" && (ev.message as JsonMessage)?.role === "assistant")
-						return `· ${textOf(ev.message as JsonMessage).split("\n")[0].slice(0, 160)}`;
+						return `· ${textOf(ev.message as JsonMessage)
+							.split("\n")[0]
+							.slice(0, 160)}`;
 					return "";
 				} catch {
 					return "";

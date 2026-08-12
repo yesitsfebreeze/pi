@@ -105,7 +105,10 @@ function detectBootstrap(cwd: string) {
 			lines.push(`- Runtime: ${eng?.node ?? "node"}`);
 			if (raw.workspaces) lines.push("- Monorepo: npm workspaces");
 		}
-		const deps = { ...(raw?.dependencies as Record<string, unknown> ?? {}), ...(raw?.devDependencies as Record<string, unknown> ?? {}) };
+		const deps = {
+			...((raw?.dependencies as Record<string, unknown>) ?? {}),
+			...((raw?.devDependencies as Record<string, unknown>) ?? {}),
+		};
 		if (Object.keys(deps).length > 0) {
 			if ("typescript" in deps) lines.push("- Language: TypeScript");
 			if ("vitest" in deps) lines.push("- Test: vitest");
@@ -197,4 +200,3 @@ export function briefingBlock(cwd: string) {
 	);
 	return parts.join("\n");
 }
-

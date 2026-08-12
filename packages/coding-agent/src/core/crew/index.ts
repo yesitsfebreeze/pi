@@ -7,6 +7,7 @@ import type {
 	ToolDefinition,
 } from "../../core/extensions/types.ts";
 import { briefingBlock, snapshot } from "./context.ts";
+import { type DiscoveryTask, planDiscovery } from "./discovery.ts";
 import { getProfile, loadProfiles, parseProfile, renderProfileList } from "./profiles.ts";
 import {
 	activeLabel,
@@ -18,20 +19,15 @@ import {
 	MAX_DEPTH,
 	renderList,
 	result,
-	resume,
 	resumable,
+	resume,
 	runs,
 	start,
 	stop,
 	stopAll,
 } from "./runner.ts";
-import {
-	type DiscoveryTask,
-	planDiscovery,
-} from "./discovery.ts";
-import type { CrewRun } from "./types.ts";
 import { runChainSync, runParallelSync, runSingleSync } from "./sync.ts";
-import type { CrewProfile } from "./types.ts";
+import type { CrewProfile, CrewRun } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline extension factory
@@ -57,16 +53,15 @@ export function createCrewExtension(): {
 				send(to: string, body: string, opts?: { re?: string; urgent?: boolean }): void;
 			}
 
-			const wt = (): WalkieTalkie | undefined => (globalThis as Record<string, unknown>).__wt as WalkieTalkie | undefined;
+			const wt = (): WalkieTalkie | undefined =>
+				(globalThis as Record<string, unknown>).__wt as WalkieTalkie | undefined;
 			const myAddr = (): string => wt()?.addr?.() ?? session;
 			const myScopes = (): string[] => wt()?.scopes?.() ?? [];
 
 			// ── helpers ────────────────────────────────────────────────────
 			function paint(): void {
 				ui?.setStatus?.(STATUS_KEY, activeLabel());
-				const up = [...runs.values()].filter(
-					(r) => r.state === "running" || r.state === "queued",
-				).length;
+				const up = [...runs.values()].filter((r) => r.state === "running" || r.state === "queued").length;
 				if (up && !refresh) {
 					refresh = setInterval(paint, 2000);
 					refresh?.unref?.();
@@ -115,8 +110,7 @@ export function createCrewExtension(): {
 
 			function doDispatch(agent: string, task: string, opts: DispatchOpts = {}): string {
 				const p = getProfile(repo, agent);
-				if (!p && agent !== "worker")
-					return `crew: no profile "${agent}"\n\n${renderProfileList(repo)}`;
+				if (!p && agent !== "worker") return `crew: no profile "${agent}"\n\n${renderProfileList(repo)}`;
 				const { run, error } = start({
 					agent,
 					task,
@@ -131,10 +125,7 @@ export function createCrewExtension(): {
 				});
 				if (error || !run) return `crew: ${error ?? "dispatch failed"}`;
 				paint();
-				const where =
-					run.state === "queued"
-						? "queued behind the running crew"
-						: `running as pid ${run.pid}`;
+				const where = run.state === "queued" ? "queued behind the running crew" : `running as pid ${run.pid}`;
 				return [
 					`${run.handle} dispatched (${agent}), ${where}, session ${run.sessionId}.`,
 					"Keep working — it reports over the channel and its result arrives as a follow-up.",
@@ -171,11 +162,9 @@ export function createCrewExtension(): {
 			function doSay(handle: string, text: string): string {
 				const run = runs.get(handle);
 				if (!run) return `crew: no run "${handle}"`;
-				if (run.state !== "running")
-					return `crew: ${handle} is ${run.state} — nothing to steer`;
+				if (run.state !== "running") return `crew: ${handle} is ${run.state} — nothing to steer`;
 				const bus = wt();
-				if (!bus)
-					return "crew: walkie-talkie is not loaded, so there is no channel to steer over";
+				if (!bus) return "crew: walkie-talkie is not loaded, so there is no channel to steer over";
 				bus.send(handle, text, { re: handle, urgent: true });
 				return `sent to ${handle} — it interrupts the run within a few seconds`;
 			}
@@ -209,15 +198,12 @@ export function createCrewExtension(): {
 					}));
 				}
 				const profile = profiles.get(params.agent ?? "") ?? fallback;
-				return runSingleSync(
-					profile,
-					params.task ?? "",
-					{ ...opts, cwdOverride: params.cwd },
-					signal,
-				).then((text) => ({
-					content: [{ type: "text", text }],
-					details: { mode: "single", agent: params.agent },
-				}));
+				return runSingleSync(profile, params.task ?? "", { ...opts, cwdOverride: params.cwd }, signal).then(
+					(text) => ({
+						content: [{ type: "text", text }],
+						details: { mode: "single", agent: params.agent },
+					}),
+				);
 			}
 
 			function doDiscover(): string {
@@ -280,9 +266,7 @@ export function createCrewExtension(): {
 					`Current regions: ${tasks.filter((t) => !t.needsDiscovery).length}`,
 					`Stale regions: ${stale.length}`,
 					"",
-					handles.length
-						? `Handles: ${handles.join(", ")}`
-						: "No scouts launched — check the crew logs.",
+					handles.length ? `Handles: ${handles.join(", ")}` : "No scouts launched — check the crew logs.",
 					"",
 					"Each scout writes its memory file and the map updates automatically.",
 					"Check progress: crew status",
@@ -310,12 +294,7 @@ export function createCrewExtension(): {
 			});
 
 			pi.on("agent_settled", () => {
-				if (
-					[...runs.values()].filter(
-						(r) => r.state === "running" || r.state === "queued",
-					).length
-				)
-					paint();
+				if ([...runs.values()].filter((r) => r.state === "running" || r.state === "queued").length) paint();
 			});
 
 			// ── tool: crew ─────────────────────────────────────────────────
@@ -422,8 +401,7 @@ export function createCrewExtension(): {
 						const sp = params as SyncParams;
 						if (sp.chain?.length) return doSync(sp, signal);
 						if (sp.tasks?.length) return doSync(sp, signal);
-						if (!sp.agent || !sp.task)
-							return out("sync needs (agent + task), tasks array, or chain array");
+						if (!sp.agent || !sp.task) return out("sync needs (agent + task), tasks array, or chain array");
 						return doSync(sp, signal);
 					}
 					if (a === "discover") {
@@ -455,9 +433,7 @@ export function createCrewExtension(): {
 					if (!run) return out(`crew: no run "${String(params.handle ?? "")}"\n\n${renderList()}`);
 					if (a === "result") return out(result(run));
 					if (a === "logs") return out(events(run, Number(params.lines) || 40));
-					return out(
-						stop(run.handle) ? `stopping ${run.handle}` : `crew: ${run.handle} is ${run.state}`,
-					);
+					return out(stop(run.handle) ? `stopping ${run.handle}` : `crew: ${run.handle} is ${run.state}`);
 				},
 			} as ToolDefinition);
 
@@ -469,38 +445,25 @@ export function createCrewExtension(): {
 					ui = ctx.ui ?? ui;
 					const tokens = args.trim().split(/\s+/).filter(Boolean);
 					const head = tokens[0];
-					const note = (t: string, k: "info" | "warning" | "error" = "info") =>
-						ctx.ui?.notify?.(t, k);
+					const note = (t: string, k: "info" | "warning" | "error" = "info") => ctx.ui?.notify?.(t, k);
 
-					if (!head)
-						return note(`crew (depth ${depth}/${MAX_DEPTH})\n\n${renderList()}`);
+					if (!head) return note(`crew (depth ${depth}/${MAX_DEPTH})\n\n${renderList()}`);
 					if (head === "list") return note(renderList());
 					if (head === "status") return note(crewStatus(tokens[1]));
 					if (head === "agents") return note(renderProfileList(repo));
-					if (head === "clear")
-						return note(`crew: cleared ${clearSettled()} settled run(s)`);
+					if (head === "clear") return note(`crew: cleared ${clearSettled()} settled run(s)`);
 					if (head === "stop") {
 						const h = tokens[1];
 						if (h === "all" || !h) {
-							const n = [...runs.values()].filter(
-								(r) => r.state === "running" || r.state === "queued",
-							).length;
+							const n = [...runs.values()].filter((r) => r.state === "running" || r.state === "queued").length;
 							stopAll();
 							paint();
-							return note(
-								`crew: interrupted ${n} run(s) — /crew resume <handle> picks any of them up`,
-							);
+							return note(`crew: interrupted ${n} run(s) — /crew resume <handle> picks any of them up`);
 						}
-						return note(
-							stop(h) ? `crew: stopping ${h}` : `crew: no running ${h}`,
-						);
+						return note(stop(h) ? `crew: stopping ${h}` : `crew: no running ${h}`);
 					}
-					if (head === "say")
-						return note(doSay(tokens[1] ?? "", tokens.slice(2).join(" ")));
-					if (head === "resume")
-						return note(
-							doResume(tokens[1] ?? "", tokens.slice(2).join(" ") || undefined),
-						);
+					if (head === "say") return note(doSay(tokens[1] ?? "", tokens.slice(2).join(" ")));
+					if (head === "resume") return note(doResume(tokens[1] ?? "", tokens.slice(2).join(" ") || undefined));
 					if (head === "result" || head === "logs") {
 						const run = runs.get(tokens[1] ?? "");
 						if (!run) return note(`crew: no run "${tokens[1] ?? ""}"`);
