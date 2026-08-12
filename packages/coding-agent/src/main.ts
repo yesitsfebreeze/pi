@@ -47,6 +47,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
+import { setNvimSurfaceClient } from "./core/nvim/nvim-surface-context.ts";
 import { connectNvim, createNvimToolDefinitions, discoverNvim, nvimToolOps } from "./core/nvim.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
@@ -932,6 +933,10 @@ export async function main(args: string[], options?: MainOptions) {
 			const conn = await connectNvim(parsed.nvimSocket);
 			const { client, exec, ops } = conn;
 
+			// Publish the live client so the nvim-surface inline extension can
+			// inject a snapshot of every buffer/window into context each turn.
+			setNvimSurfaceClient(client);
+
 			// Override standard tools with nvim-backed operations.
 			const toolNames = ["read", "write", "edit", "grep", "find", "ls", "bash"] as const;
 			const nvimOps = nvimToolOps(() => (client.connected ? client : undefined));
@@ -974,6 +979,7 @@ export async function main(args: string[], options?: MainOptions) {
 			} catch {}
 			console.log(`[nvim] Connected to ${parsed.nvimSocket}`);
 		} catch (e) {
+			setNvimSurfaceClient(undefined);
 			console.error(`[nvim] Failed to connect: ${errorMessage(e)}`);
 		}
 	}
@@ -990,7 +996,6 @@ export async function main(args: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
-			tuiMode: parsed.tuiMode,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();

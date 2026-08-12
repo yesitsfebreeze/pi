@@ -442,18 +442,26 @@ export function createLaunchToolDefinition(mgr: LaunchManager): ToolDefinition {
 			),
 			lines: Type.Optional(Type.Number({ description: "Tail length for logs (default 40)." })),
 		}),
-		execute(_id, params) {
+		async execute(_id, params) {
 			const out = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
-			const a = params.action;
+			const p = params as {
+				action: string;
+				command?: string;
+				name?: string;
+				cwd?: string;
+				restart?: boolean;
+				lines?: number;
+			};
+			const a = p.action;
 			if (a === "start") {
-				if (!params.command) return out("start needs a command");
-				return out(mgr.start(params.command, params.name, params.cwd, params.restart).msg);
+				if (!p.command) return out("start needs a command");
+				return out(mgr.start(p.command, p.name, p.cwd, p.restart).msg);
 			}
-			if (a === "stop") return out(mgr.stop(params.name ?? "all").msg);
-			if (a === "restart") return out(mgr.restart(params.name ?? "").msg);
+			if (a === "stop") return out(mgr.stop(p.name ?? "all").msg);
+			if (a === "restart") return out(mgr.restart(p.name ?? "").msg);
 			if (a === "list") return out(mgr.list());
-			if (a === "logs") return out(mgr.logs(params.name ?? "", params.lines ?? 40).msg);
-			if (a === "status") return out(mgr.status(params.name));
+			if (a === "logs") return out(mgr.logs(p.name ?? "", p.lines ?? 40).msg);
+			if (a === "status") return out(mgr.status(p.name));
 			return out(mgr.clear().msg);
 		},
 	};

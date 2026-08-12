@@ -113,3 +113,40 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 });
+
+describe("buildSystemPrompt recap", () => {
+	test("appends recap instruction when recap is true", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: ["read"],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			recap: true,
+		});
+		expect(prompt).toContain("## Recap (required output)");
+		expect(prompt).toContain("<recap>");
+		expect(prompt).toContain("MISSION:");
+	});
+
+	test("omits recap instruction by default", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: ["read"],
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+		});
+		expect(prompt).not.toContain("## Recap (required output)");
+	});
+
+	test("appends recap instruction with a custom prompt", () => {
+		const prompt = buildSystemPrompt({
+			customPrompt: "You are a custom agent.",
+			contextFiles: [],
+			skills: [],
+			cwd: process.cwd(),
+			recap: true,
+		});
+		expect(prompt).toContain("## Recap (required output)");
+		expect(prompt).toContain("You are a custom agent.");
+	});
+});

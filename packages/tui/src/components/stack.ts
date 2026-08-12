@@ -113,11 +113,17 @@ function distribute(
 		const totalWeight = candidates.reduce((sum, { entry, index }) => {
 			return sum + (mode === "grow" ? (entry.grow ?? 0) : (entry.shrink ?? 1) * Math.max(1, sizes[index]!));
 		}, 0);
+		// Each candidate's share is computed from the amount available at the
+		// start of this round, not the shrinking `remaining`. Computing proposals
+		// from `remaining` would let earlier candidates take their full share
+		// first, leaving later candidates to compute a share of the leftover —
+		// which breaks the grow-weight ratio (e.g. 6:4 came out 3:1).
+		const roundAmount = remaining;
 		let distributed = 0;
 		for (const { entry, index } of candidates) {
 			if (remaining <= 0) break;
 			const weight = mode === "grow" ? (entry.grow ?? 0) : (entry.shrink ?? 1) * Math.max(1, sizes[index]!);
-			const proposed = Math.max(1, Math.floor((remaining * weight) / totalWeight));
+			const proposed = Math.max(1, Math.floor((roundAmount * weight) / totalWeight));
 			const capacity =
 				mode === "grow"
 					? (entry.maxSize ?? Number.MAX_SAFE_INTEGER) - sizes[index]!

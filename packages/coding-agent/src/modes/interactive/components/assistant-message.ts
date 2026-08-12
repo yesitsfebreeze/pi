@@ -86,7 +86,11 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
-	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
+	updateContent(
+		message: AssistantMessage,
+		isStreaming = this.isStreaming,
+		opts: { omitTrailingNotice?: boolean } = {},
+	): void {
 		this.lastMessage = message;
 		this.isStreaming = isStreaming;
 
@@ -179,15 +183,13 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(
 				new Text(theme.fg("error", "Response was truncated before completion."), this.outputPad, 0),
 			);
-		} else if (!hasToolCalls) {
-			if (message.stopReason === "aborted") {
-				const abortMessage =
-					message.errorMessage && message.errorMessage !== "Request was aborted"
-						? message.errorMessage
-						: "Operation aborted";
-				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
-			} else if (message.stopReason === "error") {
+		} else if (!hasToolCalls && !opts.omitTrailingNotice) {
+			// The live streaming path renders a bordered DeltaLine below the
+			// message with the abort/error label, so the inline abort notice is
+			// omitted there to avoid a duplicate. History rebuilds (no
+			// DeltaLine) keep the error notice. Aborted messages never render
+			// an inline notice — the DeltaLine is the single source of truth.
+			if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
 				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));

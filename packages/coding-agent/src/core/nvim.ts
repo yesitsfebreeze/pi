@@ -6,7 +6,8 @@
  * find, ls) are transparently forwarded through nvim so all edits are visible
  * in real-time and the agent sees exactly what the user sees.
  *
- * The connection uses nvim's JSON-RPC socket API. No plugin required for basic
+ * The connection uses nvim's native msgpack-rpc socket API via the
+ * `nvim --server <socket> --remote-expr` client. No plugin required for basic
  * functionality; the pi nvim plugin (if installed) enables richer operations.
  */
 
@@ -14,6 +15,7 @@ import { execFile } from "node:child_process";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { errorMessage } from "../utils/error.js";
 import type { ToolDefinition } from "./extensions/types.js";
 import { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
 import { NvimSocketClient } from "./nvim/nvim-socket-client.js";
@@ -24,6 +26,10 @@ import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
 export { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
 // Re-export for consumers
 export { NvimSocketClient } from "./nvim/nvim-socket-client.js";
+export {
+	createNvimSurfaceAgentTools,
+	createNvimSurfaceToolDefinitions,
+} from "./nvim/nvim-surface.js";
 export {
 	createBuffersTool,
 	createLspDefinitionTool,
@@ -48,8 +54,14 @@ export type NvimExec = (lua: string) => Promise<string>;
 
 /**
  * Create an exec function that evaluates Lua code in a remote nvim instance
- * via `nvim --server <socket> --remote-expr luaeval(...)`.
- * Used as a fallback when the socket client is not available.
+ * via `nvim --server <socket> --remote-expr luaeval(...)`. This is the
+ * primary transport: it uses nvim's built-in client-server (msgpack-rpc)
+ * protocol, which works with any `nvim --listen <socket>` instance —
+ * including the pi nvim plugin, which starts pi with `--nvim-socket
+ * <vim.v.servername>`.
+ *
+ * (It does NOT work with `nvim --embed`, which lacks the server side of the
+ * protocol — but that is not the supported deployment.)
  */
 export function createNvimExec(socketPath: string): NvimExec {
 	return (lua: string): Promise<string> =>
@@ -75,8 +87,9 @@ export function createNvimExec(socketPath: string): NvimExec {
 
 /**
  * Result of connecting to an nvim instance.
- * Includes the socket client (for high-level operations) and the exec function
- * (for raw Lua evaluation as fallback).
+ * - `client`: high-level RPC client (LSP, buffers, diagnostics) backed by `exec`.
+ * - `exec`: evaluates Lua in nvim via `nvim --server --remote-expr`.
+ * - `ops`: nvim-backed implementations of the standard filesystem tools.
  */
 export interface NvimConnection {
 	client: NvimSocketClient;
@@ -86,28 +99,76 @@ export interface NvimConnection {
 
 /**
  * Connect to nvim at the given socket path.
- * Returns the full connection object with client, exec, and operations.
+ *
+ * Transport is `nvim --server <socket> --remote-expr luaeval(...)`, which
+ * uses nvim's native msgpack-rpc client-server protocol. This works with any
+ * `nvim --listen <socket>` instance (the pi nvim plugin starts pi this way,
+ * passing `vim.v.servername`).
+ *
+ * Stale-socket detection: if the socket file does not exist or the owning
+ * nvim process has died, `createNvimExec` fails fast and we unlink stale
+ * temp sockets before throwing a clear error.
  */
 export async function connectNvim(socketPath: string): Promise<NvimConnection> {
-	let client: NvimSocketClient;
+	// Wait briefly for the socket file to appear (nvim may still be starting).
+	await waitForSocketFile(socketPath);
+
+	const exec = createNvimExec(socketPath);
+
+	// Verify liveness + protocol by evaluating trivial Lua. A stale socket
+	// (dead nvim) makes `nvim --server` fail with a connection error here.
 	try {
-		client = new NvimSocketClient({ socketPath });
-		await client.connect();
-	} catch {
-		// Socket client failed — fall back to nvim --remote-expr
+		const result = await exec("return 1");
+		if (result !== "1") {
+			throw new Error(`unexpected nvim response: ${JSON.stringify(result)}`);
+		}
+	} catch (e) {
+		cleanupStaleSocket(socketPath);
 		throw new Error(
-			`Cannot connect to nvim socket at ${socketPath}. Make sure nvim is running with --listen ${socketPath}`,
+			`Cannot reach nvim at ${socketPath} (${errorMessage(e)}). ` +
+				`Make sure nvim is running with --listen ${socketPath}.`,
 		);
 	}
 
-	const exec = createNvimExec(socketPath);
-	// Verify we can reach nvim
-	await exec("return 1"); // throws on failure
-
+	const client = new NvimSocketClient({ socketPath, exec });
 	const getClient = () => (client.connected ? client : undefined);
 	const ops = createNvimOps(getClient);
 
 	return { client, exec, ops };
+}
+
+/**
+ * Wait up to ~5s for the nvim listen socket file to appear. Throws early if
+ * the path is invalid; does not throw on timeout (the exec verification below
+ * surfaces a clear error if the socket never comes up).
+ */
+async function waitForSocketFile(socketPath: string): Promise<void> {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		try {
+			const { statSync } = await import("node:fs");
+			const st = statSync(socketPath);
+			if (st.isSocket() || st.size === 0 || st.isFile()) return;
+		} catch (err: any) {
+			if (err.code !== "ENOENT") throw err;
+		}
+		await new Promise((r) => setTimeout(r, 100));
+	}
+}
+
+/**
+ * Remove a stale nvim listen socket if it lives under /tmp and looks like an
+ * nvim socket. Best-effort — avoids deleting unrelated files.
+ */
+function cleanupStaleSocket(socketPath: string): void {
+	if (!socketPath.startsWith("/tmp/") || !socketPath.includes("nvim")) return;
+	try {
+		const { statSync, unlinkSync } = require("node:fs") as typeof import("node:fs");
+		const st = statSync(socketPath);
+		if (st.isSocket() || st.size === 0) unlinkSync(socketPath);
+	} catch {
+		// best-effort; ignore.
+	}
 }
 
 // ─── Discovery ─────────────────────────────────────────────────────────────
@@ -316,7 +377,8 @@ export function nvimTools(exec: NvimExec): AgentTool[] {
 
 /**
  * Get all nvim-native tools (LSP, treesitter, config, search, find files).
- * These require the NvimSocketClient (which works with raw nvim RPC or the pi plugin).
+ * These require the NvimSocketClient (backed by `nvim --server --remote-expr`,
+ * works with any `nvim --listen` instance).
  */
 export function nvimNativeAgentTools(cwd: string, client: NvimSocketClient): AgentTool[] {
 	return createNvimAgentTools(cwd, client);

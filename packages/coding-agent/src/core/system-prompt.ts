@@ -5,6 +5,27 @@
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
+/** Instruction appended to the system prompt when recap is enabled. */
+const RECAP_INSTRUCTION = `
+## Recap (required output)
+
+Every assistant message MUST end with a recap block as the LAST thing in the
+message — no exceptions, no matter how short the turn. If you emit any text at
+all, you emit a recap block. Format, EXACTLY:
+
+<recap>
+MISSION: <one short sentence — the user's overall goal for this session>
+TASK: <one short sentence — the specific thing you are working on right now>
+NEXT: <one short sentence — the immediate next step you plan>
+</recap>
+
+Rules:
+- Emit the block on EVERY turn. No exceptions, no skipping, no "every 10 turns".
+- Each of MISSION, TASK, NEXT is exactly one line. Keep them concise.
+- Nothing goes after the block — it is the last thing in your message.
+- MISSION is the stable big-picture goal; only change it when the goal changes.
+- TASK and NEXT reflect your current, in-progress focus — update them every turn.`;
+
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
@@ -16,6 +37,8 @@ export interface BuildSystemPromptOptions {
 	promptGuidelines?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
+	/** When true, append the recap instruction so the agent emits <recap> blocks. */
+	recap?: boolean;
 	/** Working directory. */
 	cwd: string;
 	/** Pre-loaded context files. */
@@ -34,6 +57,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		toolSnippets,
 		promptGuidelines,
 		appendSystemPrompt,
+		recap,
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
@@ -41,6 +65,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const promptCwd = cwd.replace(/\\/g, "/");
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
+	const recapSection = recap ? `${RECAP_INSTRUCTION}` : "";
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
@@ -69,6 +94,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 
 		prompt += `\nCurrent working directory: ${promptCwd}\n`;
+
+		if (recapSection) {
+			prompt += recapSection;
+		}
 
 		return prompt;
 	}
@@ -159,6 +188,10 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	}
 
 	prompt += `\nCurrent working directory: ${promptCwd}`;
+
+	if (recapSection) {
+		prompt += recapSection;
+	}
 
 	return prompt;
 }

@@ -71,3 +71,72 @@ export type NvimOptions = Record<string, unknown>;
 
 /** Section of nvim config. */
 export type NvimConfigSection = "keymaps" | "options" | "lsp" | "plugins";
+
+// ── Surface snapshot (whole-session state) ─────────────────────────────────
+
+/** One window in a full surface snapshot. */
+export interface NvimWindowInfo {
+	file: string;
+	filetype: string;
+	total_lines: number;
+	modified: boolean;
+	buftype: string;
+	role?: "active" | "alternate";
+	line: number;
+	col: number;
+	context?: string[];
+	selection?: {
+		start_line: number;
+		start_col: number;
+		end_line: number;
+		end_col: number;
+		mode: string;
+	};
+	folds?: Array<[number, number]>;
+	diagnostics_summary?: { error: number; warning: number; info: number; hint: number };
+	marks?: Array<{ mark: string; line: number; col: number }>;
+	indent?: { expandtab: boolean; shiftwidth: number; tabstop: number };
+}
+
+/** Lightweight snapshot: cheap enough to pull every turn. */
+export interface NvimStateBrief {
+	mode: string;
+	cwd: string;
+	modified_buffers: string[];
+	buffers: string[];
+	current_tab: number;
+	tab_count: number;
+	active: {
+		file: string;
+		filetype: string;
+		total_lines: number;
+		modified: boolean;
+		buftype: string;
+		line: number;
+		col: number;
+		context?: string[];
+	};
+	alternate: Omit<NvimStateBrief["active"], never> | null;
+	terminals?: Array<{ buf: number; name: string; visible: boolean }>;
+}
+
+/** Full snapshot: every window with folds, selection, marks, diagnostics. */
+export interface NvimStateFull extends Omit<NvimStateBrief, "active" | "alternate"> {
+	windows: NvimWindowInfo[];
+}
+
+/** Result of reading a buffer (whole or range). */
+export interface NvimBufferRead {
+	lines: string[];
+	total_lines: number;
+	error?: string;
+}
+
+/** Result of a find-and-replace in a buffer. */
+export interface NvimFindReplaceResult {
+	start_line: number;
+	lines_removed: number;
+	lines_added: number;
+	total_lines: number;
+	error?: string;
+}

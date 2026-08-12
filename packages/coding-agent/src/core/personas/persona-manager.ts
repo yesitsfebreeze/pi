@@ -119,6 +119,13 @@ export class PersonaManager {
 		this._selectedId = DEFAULT_ID;
 	}
 
+	/** Update the working directory and reload personas (picks up a repo override + project personas). */
+	updateCwd(cwd: string, extraDirs: string[] = []): void {
+		this._cwd = cwd;
+		this._searchDirs = [builtinPersonasDir(), ...extraDirs];
+		this._reload();
+	}
+
 	/**
 	 * Register the /persona slash command and TUI picker.
 	 */

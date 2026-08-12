@@ -31,6 +31,23 @@ describe("viewport layout", () => {
 		assert.deepStrictEqual(visibleLines(frame.lines), ["top", "body", "", ""]);
 	});
 
+	it("splits grow space by grow weight across multiple candidates", () => {
+		const frame = renderLayoutFrame(
+			new VStack([
+				{ component: new Text("top", 0, 0), basis: 0, grow: 6, shrink: 1, minSize: 1 },
+				{ component: new Text("bot", 0, 0), basis: 0, grow: 4, shrink: 1, minSize: 1 },
+			]),
+			10,
+			50,
+			() => {},
+		);
+		// 60/40 split of the full viewport, independent of candidate order.
+		assert.deepStrictEqual(
+			frame.root.children.map((child) => child.rect.height),
+			[30, 20],
+		);
+	});
+
 	it("does not render fixed-basis scroll content during stack measurement", () => {
 		let renderCount = 0;
 		const transcript = new ScrollView({

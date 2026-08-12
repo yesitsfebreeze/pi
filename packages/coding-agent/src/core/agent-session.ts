@@ -101,6 +101,7 @@ import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import { ledgerSessionEnd, ledgerSessionStart } from "./session-ledger.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -377,6 +378,7 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
+	private _recapEnabled = false;
 
 	// Running LLM compaction state
 	private _runningCompaction = { summary: null as string | null, turnsSinceLastSummary: 0, totalCompacted: 0 };
@@ -407,6 +409,13 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+
+		// Stamp the terminal-session ledger on a fresh startup (not reload):
+		// which tty/pid is running which session. Reload reuses the existing
+		// entry, so it is skipped here (reason === "reload").
+		if (this._sessionStartEvent.reason === "startup") {
+			ledgerSessionStart(this.sessionId, this.sessionManager.getSessionFile() ?? null, this._cwd);
+		}
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -908,6 +917,7 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
+		ledgerSessionEnd(this.sessionId, "dispose");
 	}
 
 	// =========================================================================
@@ -943,6 +953,16 @@ export class AgentSession {
 	setSystemPrompt(prompt: string): void {
 		this._systemPromptOverride = prompt;
 		this.agent.state.systemPrompt = prompt;
+	}
+
+	/** Enable/disable the recap system-prompt instruction and rebuild the base prompt. */
+	setRecapEnabled(enabled: boolean): void {
+		if (this._recapEnabled === enabled) return;
+		this._recapEnabled = enabled;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		if (this._systemPromptOverride === undefined) {
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
+		}
 	}
 
 	get systemPrompt(): string {
@@ -1144,6 +1164,7 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			recap: this._recapEnabled,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}

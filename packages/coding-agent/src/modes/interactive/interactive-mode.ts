@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import type { AuthEvent, AuthPrompt, TextContent } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@earendil-works/pi-ai/compat";
 import type {
 	AutocompleteItem,
@@ -20,7 +20,6 @@ import type {
 	OverlayOptions,
 	SlashCommand,
 	Terminal,
-	TuiMainScreenRenderState,
 } from "@earendil-works/pi-tui";
 import * as TuiLayouts from "@earendil-works/pi-tui";
 import {
@@ -39,7 +38,6 @@ import {
 	TruncatedText,
 	type TUI,
 	TuiAltScreen,
-	TuiMainScreen,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -88,6 +86,7 @@ import {
 	resolveModelScopeFromModels,
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
+import { setNvimSurfaceClient } from "../../core/nvim/nvim-surface-context.ts";
 import {
 	connectNvim,
 	createNvimToolDefinitions,
@@ -99,12 +98,10 @@ import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
-import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { createToolDefinition, type ToolsOptions } from "../../core/tools/index.ts";
-
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
@@ -140,6 +137,7 @@ import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./c
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
+import { NvimPairPanel } from "./components/nvim-pair-panel.ts";
 import {
 	type AuthSelectorProvider,
 	formatAuthSelectorProviderType,
@@ -149,12 +147,12 @@ import { RoundedBox } from "./components/rounded-box.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SessionTreeComponent } from "./components/session-tree.ts";
+import { ContextBar, Separator, ViewHeader } from "./components/context-bar.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import {
 	BranchSummaryStatusIndicator,
 	CompactionStatusIndicator,
-	IdleStatus,
 	RetryStatusIndicator,
 	type StatusIndicator,
 } from "./components/status-indicator.ts";
@@ -166,6 +164,7 @@ import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
+import { parseRecapPartial, RecapComponent, stripRecapBlock } from "./recap-component.ts";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -188,6 +187,14 @@ interface Expandable {
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
+}
+
+/** Concatenate all text blocks of an assistant message. */
+function getAssistantText(message: AssistantMessage): string {
+	return message.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
 }
 
 class ExpandableText extends Text implements Expandable {
@@ -248,6 +255,20 @@ function quoteIfNeeded(value: string): string {
 		return value;
 	}
 	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Stable, user-private socket path for pairing with nvim.
+ *
+ * Uses `$XDG_RUNTIME_DIR` (user-owned 0700 on Linux) or `os.tmpdir()`
+ * (per-user `/var/folders/.../T` on macOS, also user-private). Avoids
+ * `/tmp` directly so the socket is not connectable by other local users on
+ * shared hosts. The session id is stable for the life of the session, so
+ * re-running `/nvim` reconnects to the same socket.
+ */
+function nvimSocketPath(sessionId: string): string {
+	const dir = process.env.XDG_RUNTIME_DIR || os.tmpdir();
+	return path.join(dir, `nvim-${sessionId}.sock`);
 }
 
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
@@ -381,31 +402,25 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
-	/** TUI layout mode. */
-	tuiMode?: TuiMode;
 }
 
 interface InteractiveTuiOptions {
-	tuiMode: TuiMode;
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	terminal?: Terminal;
 	onRightClickPaste?: () => void;
 }
 
-/** Composition root for selecting the interactive terminal renderer. */
-export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScreen | TuiAltScreen {
+/** Composition root for the interactive terminal renderer. Always fullscreen (alt screen). */
+export function createInteractiveTui(options: InteractiveTuiOptions): TuiAltScreen {
 	const terminal = options.terminal ?? new ProcessTerminal();
-	if (options.tuiMode === "fullscreen") {
-		const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
-		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
-			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
-			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
-			openUrl: openBrowser,
-			onRightClickPaste: options.onRightClickPaste,
-		});
-	}
-	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+	const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
+	return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
+		searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
+		searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
+		openUrl: openBrowser,
+		onRightClickPaste: options.onRightClickPaste,
+	});
 }
 
 /** Stable reference for components while InteractiveMode replaces the active renderer. */
@@ -441,9 +456,8 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
-	private renderer: TuiMainScreen | TuiAltScreen;
+	private renderer: TuiAltScreen;
 	private ui: TUI;
-	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
 	private chatContainer: Container;
 	private documentContainer: Container;
@@ -460,6 +474,7 @@ export class InteractiveMode {
 	private editorContainer: Container;
 	private activeSelectorToken?: object;
 	private activeSelectorDispose?: () => void;
+	private nvimPairPanel?: NvimPairPanel;
 	private statusLine: StatusLineComponent;
 	private statusLineContainer: Container;
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
@@ -472,7 +487,6 @@ export class InteractiveMode {
 	private _nvimConnected = false;
 	private _nvimConnection?: NvimConnection;
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
-	private readonly idleStatus = new IdleStatus();
 	private workingVisible = false;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
@@ -509,6 +523,11 @@ export class InteractiveMode {
 		getMode: () => this.settingsManager.getMermaidRenderingMode(),
 		theme,
 	});
+
+	// Pinned recap overlay (MISSION/TASK/NEXT) at the very top of the TUI.
+	private recapComponent: RecapComponent | undefined;
+	private recapContainer: Container;
+	private readonly recapMarkdownTransformer: MarkdownTransformer = (markdown) => stripRecapBlock(markdown);
 
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
@@ -554,6 +573,17 @@ export class InteractiveMode {
 	private widgetContainerBelow!: Container;
 	private sessionTreeContainer!: Container;
 	private sessionTreeComponent!: SessionTreeComponent;
+	private sessionTreeScrollView!: TuiLayouts.ScrollView;
+	/** Sticky title line above the bottom list pane. */
+	private viewHeader!: ViewHeader;
+	/** Context bar pinned to the very last terminal line. */
+	private contextBar!: ContextBar;
+	/** Thin rule between the editor input and the list pane. */
+	private inputSeparator!: Separator;
+	/** Swappable list pane: holds the session tree (or a menu/list when one is open). */
+	private bottomPaneContainer!: Container;
+	/** The VBox that owns [viewHeader + scroll] for the current list view. */
+	private bottomListHost!: TuiLayouts.VStack;
 
 	// Header container that holds the built-in or custom header
 	private headerContainer: Container;
@@ -588,8 +618,7 @@ export class InteractiveMode {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
-		this.options = { ...options, tuiMode };
+		this.options = { ...options };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
@@ -599,7 +628,6 @@ export class InteractiveMode {
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
-			tuiMode,
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: getAgentDir(),
 			onRightClickPaste: this.onRightClickPaste,
@@ -610,6 +638,7 @@ export class InteractiveMode {
 		this.loadedResourcesContainer = new Container();
 		this.chatContainer = new Container();
 		this.documentContainer = new Container();
+		this.recapContainer = new Container();
 		this.documentContainer.addChild(this.headerContainer);
 		this.documentContainer.addChild(this.loadedResourcesContainer);
 		this.documentContainer.addChild(this.chatContainer);
@@ -620,6 +649,8 @@ export class InteractiveMode {
 		this.widgetContainerBelow = new Container();
 		this.sessionTreeContainer = new Container();
 		this.sessionTreeComponent = new SessionTreeComponent(() => this.ui.requestRender());
+		// The surrounding ScrollView windows the tree; the component always
+		// renders its full content and the view handles windowing.
 		this.sessionTreeComponent.onFocusLeave = () => {
 			this.ui.setFocus(this.editor);
 		};
@@ -627,6 +658,37 @@ export class InteractiveMode {
 			this.switchToSession(sessionId, cwd);
 		};
 		this.sessionTreeContainer.addChild(this.sessionTreeComponent);
+		// Wrap the menu container in a ScrollView so the bottom pane scrolls
+		// with the mouse wheel just like the transcript pane above. The tree
+		// component renders its full content; this view handles windowing.
+		this.sessionTreeScrollView = new TuiLayouts.ScrollView(this.sessionTreeContainer, {
+			follow: "none",
+			overscroll: "chain",
+			scrollbar: this.settingsManager.getFullscreenScrollbar(),
+			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
+		});
+		// Keep the keyboard selection visible inside the scroll viewport.
+		this.sessionTreeComponent.onEnsureVisible = (line) => {
+			const sv = this.sessionTreeScrollView;
+			const vh = sv.viewportHeight;
+			if (vh <= 0) return;
+			const top = sv.scrollTop;
+			if (line < top) sv.scrollTo(line);
+			else if (line >= top + vh) sv.scrollTo(line - vh + 1);
+		};
+		// Bottom list pane: a sticky view header above the scrollable tree.
+		this.viewHeader = new ViewHeader(() => this.ui.requestRender());
+		this.contextBar = new ContextBar(() => this.ui.requestRender());
+		this.inputSeparator = new Separator(() => this.ui.requestRender());
+		this.bottomPaneContainer = new Container();
+		// The list host owns [sticky header + scroll] for the sessions view.
+		this.bottomListHost = new TuiLayouts.VStack([
+			{ component: this.viewHeader, basis: "auto", shrink: 1, minSize: 0 },
+			{ component: this.sessionTreeScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		]);
+		this.bottomPaneContainer.addChild(this.bottomListHost);
+		// Refresh the context bar whenever the tree's focus/selection changes.
+		this.sessionTreeComponent.onContextUpdate = () => this.syncContextBar();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -842,72 +904,18 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new DynamicBorder());
 	}
 
-	private mountInteractiveTui(tui: TuiMainScreen | TuiAltScreen, components: readonly Component[]): void {
+	private mountInteractiveTui(tui: TuiAltScreen, components: readonly Component[]): void {
 		for (const component of components) tui.addChild(component);
-		if (TuiLayouts.isViewportTUI(tui)) {
-			if (!this.fullscreenLayoutRoot) throw new Error("Fullscreen layout is not initialized");
-			tui.setLayoutRoot(this.fullscreenLayoutRoot);
-		}
+		if (!this.fullscreenLayoutRoot) throw new Error("Fullscreen layout is not initialized");
+		tui.setLayoutRoot(this.fullscreenLayoutRoot);
 	}
 
-	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
-		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
-			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			this.switchTuiMode("regular", false, false);
-			this.renderer.renderNow();
-		}
-		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
-	}
-
-	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
-		const previousUi = this.renderer;
-		if (mode === previousUi.mode) return true;
-		if (previousUi.hasOverlayEntries) return false;
-
-		const components = [...previousUi.children];
-		const focus = previousUi.getFocusedComponent();
-		const terminal = previousUi.terminal;
-		const showHardwareCursor = previousUi.getShowHardwareCursor();
-		const clearOnShrink = previousUi.getClearOnShrink();
-		const onDebug = previousUi.onDebug;
-		if (previousUi instanceof TuiMainScreen) {
-			this.mainScreenRenderState = previousUi.captureRenderState();
-		}
-
-		previousUi.stop({ preserveScreen: true });
-		previousUi.setFocus(null);
-		previousUi.clear();
-		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
-
-		const nextUi = createInteractiveTui({
-			tuiMode: mode,
-			showHardwareCursor,
-			logDirectory: getAgentDir(),
-			terminal,
-			onRightClickPaste: this.onRightClickPaste,
-		});
-		nextUi.setClearOnShrink(clearOnShrink);
-		nextUi.onDebug = onDebug;
-		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
-			nextUi.restoreRenderState(this.mainScreenRenderState);
-		}
-		this.renderer = nextUi;
-		this.options.tuiMode = mode;
-		this.mountInteractiveTui(nextUi, components);
-		nextUi.invalidate();
-		nextUi.setFocus(focus);
-		if (!startRenderer) return true;
-		nextUi.start();
-		this.themeController.rebindTui();
-		this.rebindExtensionTerminalInputListeners();
-		if (
-			restoreProgress &&
-			this.settingsManager.getShowTerminalProgress() &&
-			(this.session.isStreaming || this.session.isCompacting)
-		) {
-			terminal.setProgress(true);
-		}
-		return true;
+	private stopInteractiveTui(): void {
+		while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+		// Always fullscreen: exit the alt screen and restore the prior terminal.
+		// The resume hint (if any) is printed by the caller after stop().
+		this.recapComponent?.dispose();
+		this.ui.stop({ preserveScreen: true });
 	}
 
 	async init(): Promise<void> {
@@ -938,7 +946,7 @@ export class InteractiveMode {
 			console.log(theme.fg("dim", `Model scope: ${modelList}${cycleHint}`));
 		}
 
-		// Keep one component tree and remount it when changing renderers.
+		// Keep one component tree; fullscreen is the only supported mode.
 		this.renderWidgets(); // Initialize with default spacer
 		this.transcriptScrollView = new TuiLayouts.ScrollView(this.documentContainer, {
 			follow: "end",
@@ -947,23 +955,48 @@ export class InteractiveMode {
 			scrollbar: this.settingsManager.getFullscreenScrollbar(),
 			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
 		});
-		// Layout: chat on top (~60%), input in the middle, session net below (~40%)
 		const editorDock = new TuiLayouts.VStack([
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
 			{ component: this.startupBannerContainer, shrink: 1, minSize: 0 },
-			{ component: this.statusLineContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 		]);
-		const topComponent = this.transcriptScrollView;
-		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
-			{ component: topComponent, basis: 0, grow: 6, shrink: 1, minSize: 1 },
-			{ component: editorDock, basis: "auto", grow: 0, shrink: 1, minSize: 3 },
-			{ component: this.sessionTreeContainer, basis: 0, grow: 4, shrink: 1, minSize: 1 },
+		// Layout (fullscreen only), top → bottom:
+		//   • chat (top) — a ScrollView that grows *upward*: follow:end pins the
+		//     newest content to the bottom of its pane, so as the transcript
+		//     accumulates beyond the viewport it scrolls upward.
+		//   • status line — pinned at a fixed 60% from the top (the top edge of
+		//     the bottom band). The chat and the bottom band split the full
+		//     viewport 60/40 by grow ratio, so the boundary is exactly at 60%
+		//     regardless of the editor's natural height.
+		//   • editor input — natural height, sits just below the status line.
+		//   • session tree (bottom) — a ScrollView that grows *downward*: the menu
+		//     renders its full content and the view windows it, scrolling down to
+		//     reveal more. It fills whatever the status line + editor leave in the
+		//     bottom band, so it gets nearly the whole bottom 40% of the screen.
+		// Both ScrollViews scroll with the mouse wheel; the chat is `primary` so
+		// keyboard page-up/down scrolls it.
+		const bottomBand = new TuiLayouts.VStack([
+			{ component: this.statusLineContainer, basis: "auto", shrink: 1, minSize: 0 },
+			{ component: editorDock, basis: "auto", shrink: 1, minSize: 1 },
+			{ component: this.inputSeparator, basis: "auto", shrink: 1, minSize: 0 },
+			{ component: this.bottomPaneContainer, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: this.contextBar, basis: "auto", shrink: 1, minSize: 0 },
 		]);
+		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
+			{ component: this.recapContainer, basis: "auto", shrink: 1, minSize: 0 },
+			{ component: this.transcriptScrollView, basis: 0, grow: 6, shrink: 1, minSize: 1 },
+			{ component: bottomBand, basis: 0, grow: 4, shrink: 1, minSize: 1 },
+		]);
+		this.recapComponent = new RecapComponent({
+			requestRender: () => this.ui.requestRender(),
+			theme,
+		});
+		this.recapContainer.addChild(this.recapComponent);
 		this.mountInteractiveTui(this.renderer, [
+			this.recapContainer,
 			this.documentContainer,
 			this.pendingMessagesContainer,
 			this.statusContainer,
@@ -971,10 +1004,17 @@ export class InteractiveMode {
 			this.statusLineContainer,
 			this.widgetContainerAbove,
 			this.editorContainer,
+			this.viewHeader,
 			this.sessionTreeContainer,
+			this.bottomPaneContainer,
+			this.inputSeparator,
+			this.contextBar,
 			this.widgetContainerBelow,
 		]);
 		this.ui.setFocus(this.editor);
+
+		// Enable the recap system-prompt instruction so the agent emits <recap> blocks.
+		this.session.setRecapEnabled(true);
 
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
@@ -982,6 +1022,7 @@ export class InteractiveMode {
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		this.sessionTreeComponent.start();
+		this.syncContextBar();
 		this.isInitialized = true;
 
 		await this.themeController.applyFromSettings();
@@ -2028,7 +2069,7 @@ export class InteractiveMode {
 		const message = error instanceof Error ? error.message : String(error);
 		this.showError(`${prefix}: ${message}`);
 		stopThemeWatcher();
-		this.stop("transcript");
+		this.stop();
 		process.exit(1);
 	}
 
@@ -2051,7 +2092,11 @@ export class InteractiveMode {
 	}
 
 	private getMarkdownTransformers(): MarkdownTransformer[] {
-		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
+		return [
+			this.recapMarkdownTransformer,
+			this.mermaidMarkdownTransformer,
+			...this.session.extensionRunner.getMarkdownTransformers(),
+		];
 	}
 
 	/**
@@ -2131,13 +2176,9 @@ export class InteractiveMode {
 		if (kind && this.activeStatusIndicator?.kind !== kind) {
 			return;
 		}
-		const hadActiveStatusIndicator = this.activeStatusIndicator !== undefined;
 		this.activeStatusIndicator?.dispose();
 		this.activeStatusIndicator = undefined;
 		this.statusContainer.clear();
-		if (hadActiveStatusIndicator && this.options.tuiMode === "regular" && this.ui.getClearOnShrink()) {
-			this.statusContainer.addChild(this.idleStatus);
-		}
 	}
 
 	private setWorkingVisible(visible: boolean): void {
@@ -2364,13 +2405,6 @@ export class InteractiveMode {
 			subscription.unsubscribe();
 			this.extensionTerminalInputSubscriptions.delete(subscription);
 		};
-	}
-
-	private rebindExtensionTerminalInputListeners(): void {
-		for (const subscription of this.extensionTerminalInputSubscriptions) {
-			subscription.unsubscribe();
-			subscription.unsubscribe = this.ui.addInputListener(subscription.handler);
-		}
 	}
 
 	private clearExtensionTerminalInputListeners(): void {
@@ -2866,6 +2900,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
 		this.defaultEditor.onAction("app.session.focusTree", () => {
 			this.ui.setFocus(this.sessionTreeComponent);
+			this.syncContextBar();
 		});
 
 		this.defaultEditor.onChange = (text: string) => {
@@ -2881,6 +2916,13 @@ export class InteractiveMode {
 		this.defaultEditor.onPasteImage = () => {
 			void this.handleClipboardPaste();
 		};
+	}
+
+	/** Refresh the bottom context bar from the current list-pane view. */
+	private syncContextBar(): void {
+		const tree = this.sessionTreeComponent;
+		this.contextBar.setView(tree.viewTitle, tree.shortcutsText());
+		this.viewHeader.setTitle(tree.viewTitle);
 	}
 
 	private async handleRightClickPaste(): Promise<void> {
@@ -3301,6 +3343,13 @@ export class InteractiveMode {
 
 	private handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): void {
 		if (event.message.role === "user") return;
+		if (this.recapComponent && event.message.role === "assistant") {
+			// Merge whatever fields the model emitted, keeping the last known
+			// value for any it omitted — so a block that only refreshes TASK/NEXT
+			// still advances the display.
+			const partial = parseRecapPartial(getAssistantText(event.message));
+			if (partial) this.recapComponent.mergeRecap(partial);
+		}
 		if (this.streamingComponent && event.message.role === "assistant") {
 			this.streamingMessage = event.message;
 			let errorMessage: string | undefined;
@@ -3312,7 +3361,14 @@ export class InteractiveMode {
 						: "Operation aborted";
 				this.streamingMessage.errorMessage = errorMessage;
 			}
-			this.streamingComponent.updateContent(this.streamingMessage, false);
+			// A bordered DeltaLine below the message renders the same abort/error
+			// label, so omit the inline duplicate notice when usage data is present
+			// (the case that produces a DeltaLine). Without usage there is no
+			// DeltaLine, so the inline notice is kept.
+			const willShowDeltaLine = !!this.streamingMessage.usage;
+			this.streamingComponent.updateContent(this.streamingMessage, false, {
+				omitTrailingNotice: willShowDeltaLine,
+			});
 
 			const durationMs = Date.now() - this.responseStartTime;
 			const modelName = this.session.state.model?.id || "unknown";
@@ -4534,8 +4590,6 @@ export class InteractiveMode {
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
-					tuiMode: this.ui.mode,
-					fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					warnings: this.settingsManager.getWarnings(),
 				},
@@ -4680,19 +4734,6 @@ export class InteractiveMode {
 					onShowTerminalProgressChange: (enabled) => {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
-					onTuiModeChange: (mode) => {
-						if (!this.switchTuiMode(mode)) {
-							selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-							this.showStatus("Close active overlays before changing TUI mode");
-							return;
-						}
-						this.settingsManager.setTuiMode(mode);
-						if (!this.activeStatusIndicator) this.statusContainer.clear();
-						this.showStatus(`TUI mode: ${mode}`);
-					},
-					onFullscreenExitOutputChange: (output) => {
-						this.settingsManager.setFullscreenExitOutput(output);
-					},
 					onFullscreenScrollbarChange: (mode) => {
 						this.settingsManager.setFullscreenScrollbar(mode);
 						this.applyFullscreenScrollbarSetting();
@@ -4732,30 +4773,43 @@ export class InteractiveMode {
 		}
 		const arg = text.slice(5).trim(); // remove "/nvim "
 
-		// /nvim with no args → generate code, print instructions, auto-connect
+		// /nvim with no args → use the current session id as the socket path.
+		// The session id is stable for the life of the session, so the socket
+		// path is stable too: run `/nvim` once to print the pairing command,
+		// start the server in nvim, and every later `/nvim` reconnects to the
+		// same socket without re-printing the command.
 		if (!arg) {
-			const code = `${Math.floor(100 + Math.random() * 900)}-${Math.floor(100 + Math.random() * 900)}`;
-			const sock = `/tmp/nvim-${code}.sock`;
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new DynamicBorder());
-			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Pair with nvim")), 1, 0));
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(`Code: ${code}`, 1, 0));
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text("Run this Ex command in nvim:", 1, 0));
-			this.chatContainer.addChild(new Text(theme.fg("accent", `  :lua vim.fn.serverstart('${sock}')`), 1, 0));
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(theme.fg("muted", "Waiting for connection..."), 1, 0));
-			this.ui.requestRender();
+			const sock = nvimSocketPath(this.sessionManager.getSessionId());
 
-			// Retry loop: wait for socket to appear, then auto-connect
+			// If a socket file already exists, probe liveness: connectNvim()
+			// verifies the nvim process actually responds and unlinks stale
+			// sockets itself, so a dead leftover file is cleaned up and we fall
+			// through to the pairing panel.
+			if (fs.existsSync(sock)) {
+				try {
+					await this._connectNvimSocket(sock);
+					return;
+				} catch {
+					// stale socket; fall through to pairing panel.
+				}
+			}
+
+			// Show the pairing panel in place of the session tree (below the
+			// input line). `C` copies the Ex command without the leading `:`;
+			// `Esc` cancels and restores the session tree.
+			this._showNvimPairPanel(sock);
+
+			// Retry loop: wait for the socket to appear, then auto-connect.
 			for (let i = 0; i < 60; i++) {
 				await new Promise((r) => setTimeout(r, 1000));
+				if (!this.nvimPairPanel) return; // cancelled via Esc
 				if (fs.existsSync(sock)) {
+					this._hideNvimPairPanel();
 					await this._connectNvimSocket(sock);
 					return;
 				}
 			}
+			this._hideNvimPairPanel();
 			this.showStatus("Timed out waiting for nvim. Run /nvim again.");
 			return;
 		}
@@ -4769,12 +4823,35 @@ export class InteractiveMode {
 			socketPath = arg;
 		}
 
-		if (!fs.existsSync(socketPath)) {
-			this.showStatus(`Socket ${socketPath} not found. Run /nvim for instructions.`);
-			return;
-		}
-
+		// Don't gate on fs.existsSync here: connectNvim() waits up to ~5s for the
+		// socket to appear (nvim may still be starting). This lets /nvim <path>
+		// connect to a socket that's being created right now.
 		await this._connectNvimSocket(socketPath);
+	}
+
+	private _showNvimPairPanel(socketPath: string): void {
+		// Tear down any prior panel (e.g. user re-ran /nvim while waiting).
+		if (this.nvimPairPanel) this._hideNvimPairPanel();
+		const panel = new NvimPairPanel({
+			socketPath,
+			requestRender: () => this.ui.requestRender(),
+			onDone: () => this._hideNvimPairPanel(),
+		});
+		this.nvimPairPanel = panel;
+		this.sessionTreeContainer.clear();
+		this.sessionTreeContainer.addChild(panel);
+		this.ui.setFocus(panel);
+		this.ui.requestRender();
+	}
+
+	private _hideNvimPairPanel(): void {
+		if (!this.nvimPairPanel) return;
+		this.nvimPairPanel.dispose?.();
+		this.nvimPairPanel = undefined;
+		this.sessionTreeContainer.clear();
+		this.sessionTreeContainer.addChild(this.sessionTreeComponent);
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
 	}
 
 	private async _connectNvimSocket(socketPath: string): Promise<void> {
@@ -4783,6 +4860,10 @@ export class InteractiveMode {
 			const conn = await connectNvim(socketPath);
 			const { client, exec, ops } = conn;
 			this._nvimConnection = conn;
+
+			// Publish the live client so the nvim-surface inline extension can
+			// inject a snapshot of every buffer/window into context each turn.
+			setNvimSurfaceClient(client);
 
 			// 1. Override standard tools with nvim-backed operations.
 			//    This makes read/write/edit/grep/find/ls/bash all go through nvim.
@@ -4833,6 +4914,13 @@ export class InteractiveMode {
 
 			// 4. Notify the model that nvim is connected with full tool list.
 			const nativeToolNames = [
+				"nvim_state",
+				"nvim_read_buf",
+				"nvim_find_replace",
+				"nvim_keys",
+				"nvim_terminal_send",
+				"nvim_highlight",
+				"nvim_virtual_text",
 				"lsp_diagnostics",
 				"lsp_references",
 				"lsp_definition",
@@ -4847,6 +4935,9 @@ export class InteractiveMode {
 				`nvim connected. All file operations (read, write, edit, grep, find, ls) ` +
 					`now go through nvim so you see exactly what the user sees. ` +
 					`Additional nvim-native tools: ${nativeToolNames.join(", ")}. ` +
+					`Use nvim_state to see the whole session (every buffer, window, cursor, mode, diagnostics). ` +
+					`Use nvim_read_buf to read any buffer and nvim_find_replace to edit any live buffer. ` +
+					`Use nvim_keys to send keystrokes (cursor/typing/mappings) and nvim_terminal_send to drive a terminal buffer. ` +
 					`Use nvim_exec/nvim_lua to control nvim directly. ` +
 					`Use nvim_config to inspect the nvim setup. ` +
 					`Use nvim_search/nvim_find_files for fuzzy/project search via telescope/fzf-lua/vimgrep.`,
@@ -4861,6 +4952,7 @@ export class InteractiveMode {
 			this.ui.requestRender();
 			this.showStatus("");
 		} catch (e) {
+			setNvimSurfaceClient(undefined);
 			this.showStatus(`Failed to connect: ${errorMessage(e)}`);
 		}
 	}
@@ -4988,9 +5080,7 @@ export class InteractiveMode {
 		const now = Date.now();
 		const cached = this.gitCache;
 		const ttl =
-			cached?.result === undefined
-				? InteractiveMode.GIT_FAILURE_BACKOFF_MS
-				: InteractiveMode.GIT_CACHE_TTL_MS;
+			cached?.result === undefined ? InteractiveMode.GIT_FAILURE_BACKOFF_MS : InteractiveMode.GIT_CACHE_TTL_MS;
 		const fresh = cached?.cwd === cwd && now - cached.ts < ttl;
 		if (fresh) return cached!.result;
 		if (!this.gitRefreshInFlight) void this.refreshGitStatus(cwd);
@@ -6772,7 +6862,7 @@ export class InteractiveMode {
 		}
 	}
 
-	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+	stop(): void {
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
@@ -6785,7 +6875,7 @@ export class InteractiveMode {
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.stopInteractiveTui(fullscreenExitOutput);
+			this.stopInteractiveTui();
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();

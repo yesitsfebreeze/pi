@@ -12,6 +12,7 @@ import type { ToolDefinition } from "../extensions/types.js";
 import { wrapToolDefinition } from "../tools/tool-definition-wrapper.js";
 import { createNvimConfigAgentTool, createNvimConfigTool } from "./nvim-config-tool.js";
 import type { NvimSocketClient } from "./nvim-socket-client.js";
+import { createNvimSurfaceAgentTools, createNvimSurfaceToolDefinitions } from "./nvim-surface.js";
 import type { NvimDiagnostic, NvimLspLocation } from "./nvim-transport-types.js";
 
 export { createNvimConfigAgentTool, createNvimConfigTool } from "./nvim-config-tool.js";
@@ -548,6 +549,7 @@ export function createNvimFindFilesAgentTool(
 
 export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient): ToolDefinition[] {
 	return [
+		...createNvimSurfaceToolDefinitions(client),
 		createLspDiagnosticsTool(cwd, client),
 		createLspReferencesTool(cwd, client),
 		createLspDefinitionTool(cwd, client),
@@ -562,6 +564,7 @@ export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient)
 
 export function createNvimAgentTools(cwd: string, client: NvimSocketClient): AgentTool<any>[] {
 	return [
+		...createNvimSurfaceAgentTools(client),
 		createLspDiagnosticsAgentTool(cwd, client),
 		createLspReferencesAgentTool(cwd, client),
 		createLspDefinitionAgentTool(cwd, client),

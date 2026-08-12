@@ -8,6 +8,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { getCoreInlineExtensions } from "./core-inline-extensions.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	clearExtensionCache,
@@ -166,6 +167,8 @@ export interface DefaultResourceLoaderOptions {
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
 	extensionFactories?: InlineExtension[];
+	/** Omit the always-on core inline extensions (file-awareness, persona, rigor, forest, launch, until, issue-reporter, crew). Tests of the loader mechanics set this to assert exact inline-factory counts. */
+	noCoreInlineExtensions?: boolean;
 	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
@@ -204,6 +207,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
 	private extensionFactories: InlineExtension[];
+	private noCoreInlineExtensions: boolean;
 	private noExtensions: boolean;
 	private noSkills: boolean;
 	private noPromptTemplates: boolean;
@@ -265,7 +269,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];
-		this.extensionFactories = options.extensionFactories ?? [];
+		// Core inline extensions (file-awareness, persona, rigor, forest, launch,
+		// until, issue-reporter, crew) are always loaded — they are pi features,
+		// not user extensions. User-provided factories are appended so they load
+		// alongside and can still override tool/command names by load order.
+		this.extensionFactories = options.noCoreInlineExtensions
+			? [...(options.extensionFactories ?? [])]
+			: [...getCoreInlineExtensions(), ...(options.extensionFactories ?? [])];
+		this.noCoreInlineExtensions = options.noCoreInlineExtensions ?? false;
 		this.noExtensions = options.noExtensions ?? false;
 		this.noSkills = options.noSkills ?? false;
 		this.noPromptTemplates = options.noPromptTemplates ?? false;

@@ -2,21 +2,20 @@ import type { Usage } from "@earendil-works/pi-ai/compat";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { formatTokens } from "./footer.ts";
+import { renderRoundedBox } from "./rounded-box.ts";
 
-const SEP = " \x1b[2m·\x1b[22m ";
+const SEP = " \x1b[2m|\x1b[22m ";
 
-/** Icon prefix that identifies the delta line. */
-const ICON = "▸";
-
-/** Thick horizontal fill character drawn to the right edge after the content. */
-const FILL = "━";
+/** Border color for the rounded box — a border token not otherwise used by this line. */
+const BORDER_COLOR: "borderMuted" = "borderMuted";
 
 /** Absolute minimum model name width before dropping the field entirely. */
 const MODEL_MIN_WIDTH = 5;
 
 /**
  * Per-response delta line rendered below each completed assistant message.
- * Shows the resource delta (tokens, cost, throughput, duration) for that response.
+ * Shows the resource delta (tokens, cost, throughput, duration) for that response,
+ * wrapped in a rounded border box sized to its content.
  *
  * Sections use zentui-style styling:
  *   - tokens: bright-black (muted)
@@ -54,6 +53,21 @@ export class DeltaLineComponent implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		if (width < 3) return [];
+
+		const border = (s: string) => theme.fg(BORDER_COLOR, s);
+		const contentWidth = width - 4; // width - 2 borders - 1 left padding cell - 1 right padding cell
+
+		const wrap = (content: string): string[] =>
+			renderRoundedBox({
+				lines: [truncateToWidth(content, contentWidth, theme.fg("dim", "…"))],
+				width,
+				colorFn: border,
+				leftPad: 1,
+				rightPad: 1,
+				sizeToContent: true,
+			});
+
 		if (this.isError) {
 			const label = this.errorLabel ?? "Error";
 			const parts: string[] = [theme.fg("error", label)];
@@ -67,16 +81,21 @@ export class DeltaLineComponent implements Component {
 			if (this.usage.cost.total > 0) {
 				parts.push(theme.bold(theme.fg("success", `$${this.usage.cost.total.toFixed(3)}`)));
 			}
-			const line = parts.join(SEP);
-			const prefix = theme.fg("dim", ICON) + " ";
-			const content = prefix + line;
-			const cw = visibleWidth(content);
-			if (cw < width) return [content + theme.fg("dim", FILL.repeat(width - cw))];
-			return [truncateToWidth(content, width, theme.fg("dim", "..."))];
+			return wrap(parts.join(SEP));
 		}
 
 		const fields: string[] = [];
 		const promptTokens = this.usage.input + this.usage.cacheRead + this.usage.cacheWrite;
+
+		// Model name first: accent color (highest priority — never dropped, only truncated)
+		if (this.modelName) {
+			const modelStyled = theme.fg("accent", this.modelName);
+			if (visibleWidth(modelStyled) > contentWidth) {
+				fields.push(truncateToWidth(modelStyled, Math.max(MODEL_MIN_WIDTH, contentWidth), "…"));
+			} else {
+				fields.push(modelStyled);
+			}
+		}
 
 		// Tokens: one logical field (↑N ↓N)
 		const tokenParts: string[] = [];
@@ -101,44 +120,23 @@ export class DeltaLineComponent implements Component {
 			fields.push(theme.fg("dim", `${durationSec.toFixed(1)}s`));
 		}
 
-		// Model name: accent color
-		if (this.modelName && fields.length > 0) {
-			const modelStyled = theme.fg("accent", this.modelName);
-			if (visibleWidth(fields.join(SEP) + SEP + modelStyled) <= width) {
-				fields.push(modelStyled);
-			} else {
-				const truncated = truncateToWidth(theme.fg("accent", this.modelName), MODEL_MIN_WIDTH, "…");
-				if (visibleWidth(fields.join(SEP) + SEP + truncated) <= width) {
-					fields.push(truncated);
-				}
-			}
-		} else if (this.modelName && fields.length === 0) {
-			fields.push(theme.fg("accent", this.modelName));
-		}
-
 		// Reasoning level: dim
 		if (this.thinkingLevel && this.thinkingLevel !== "off") {
-			const reasoning = theme.fg("dim", `reasoning: ${this.thinkingLevel}`);
-			if (visibleWidth(fields.join(SEP) + SEP + reasoning) <= width) {
-				fields.push(reasoning);
-			}
+			fields.push(theme.fg("dim", `reasoning: ${this.thinkingLevel}`));
 		}
 
 		if (fields.length === 0) return [];
 
 		// Build line left-to-right, dropping low-priority fields on overflow.
+		// Model name (first) is highest priority; trailing fields drop first.
 		let line = fields[0] ?? "";
 		for (let i = 1; i < fields.length; i++) {
 			const candidate = line + SEP + (fields[i] ?? "");
-			if (visibleWidth(candidate) <= width) {
+			if (visibleWidth(candidate) <= contentWidth) {
 				line = candidate;
 			}
 		}
 
-		const prefix = theme.fg("dim", ICON) + " ";
-		const content = prefix + line;
-		const cw = visibleWidth(content);
-		if (cw < width) return [content + theme.fg("dim", FILL.repeat(width - cw))];
-		return [truncateToWidth(content, width, theme.fg("dim", "..."))];
+		return wrap(line);
 	}
 }

@@ -104,6 +104,7 @@ describe("AgentSession dynamic tool registration", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			noCoreInlineExtensions: true,
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_start", () => {

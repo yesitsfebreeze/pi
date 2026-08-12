@@ -6,7 +6,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, normalize } from "node:path";
+import { basename, dirname, join, normalize } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "../../core/extensions/types.ts";
 
@@ -71,7 +71,15 @@ function resolveWriteTarget(t: string, cwd: string): string {
 	t = t.trim().replace(/^['"]|['"]$/g, "");
 	if (!t || t.startsWith("/dev/") || t.startsWith("$") || t.startsWith("<")) return "";
 	const abs = t.startsWith("/") ? t : join(cwd, t);
-	return real(abs);
+	// realpathSync fails for not-yet-existing files (the common write case),
+	// so resolve the longest existing ancestor and re-append the rest. This
+	// keeps symlinked prefixes (/var -> /private/var) consistent with a scope
+	// whose dir already exists and was resolved.
+	try {
+		return realpathSync(abs);
+	} catch {
+		return join(real(dirname(abs)), basename(abs));
+	}
 }
 
 // ── git helpers ─────────────────────────────────────────────────────

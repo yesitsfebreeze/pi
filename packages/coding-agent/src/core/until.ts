@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "until-config.json");
+function configPath(): string {
+	return join(homedir(), ".pi", "agent", "until-config.json");
+}
 const DONE_MARKER = "[UNTIL: DONE]";
 
 // ─── pace config ─────────────────────────────────────────────────────
@@ -205,7 +207,7 @@ export class UntilManager {
 
 	private _loadConfig(): UntilConfig {
 		try {
-			const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+			const cfg = JSON.parse(readFileSync(configPath(), "utf8"));
 			return { triggerWord: cfg.triggerWord ?? "until", maxIterations: cfg.maxIterations ?? 50 };
 		} catch {
 			return { triggerWord: "until", maxIterations: 50 };
@@ -214,7 +216,7 @@ export class UntilManager {
 
 	private _writeConfig(): void {
 		try {
-			writeFileSync(CONFIG_PATH, `${JSON.stringify(this._config, null, 2)}\n`);
+			writeFileSync(configPath(), `${JSON.stringify(this._config, null, 2)}\n`);
 		} catch {
 			/* best-effort */
 		}
