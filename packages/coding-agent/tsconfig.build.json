@@ -15,5 +15,5 @@
 		"rootDir": "./src"
 	},
 	"include": ["src/**/*.ts", "src/**/*.d.ts"],
-	"exclude": ["node_modules", "dist"]
+	"exclude": ["node_modules", "dist", "src/core/crew/wt-bridge.ts", "src/core/history-slim.ts", "src/core/launch.ts", "src/core/doctor.ts"]
 }
