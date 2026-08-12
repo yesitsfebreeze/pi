@@ -2,6 +2,7 @@ import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import type { GitStatus } from "../src/modes/interactive/components/status-line.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {
 	createInteractiveTui,
@@ -238,6 +239,74 @@ type InteractiveModePrototype = {
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
+
+type GitStatusContext = {
+	sessionManager: { getCwd: () => string | undefined };
+	ui: { requestRender: () => void };
+	gitCache: { result: GitStatus | undefined; ts: number; cwd: string } | undefined;
+	gitRefreshInFlight: boolean;
+};
+
+type GitStatusPrototype = {
+	getGitStatus(this: GitStatusContext): GitStatus | undefined;
+	refreshGitStatus(this: GitStatusContext, cwd: string): void;
+};
+
+const gitStatusPrototype = InteractiveMode.prototype as unknown as GitStatusPrototype;
+
+describe("status-line git status", () => {
+	it("returns the cached value synchronously without spawning git or re-rendering", () => {
+		const requestRender = vi.fn();
+		const status = { branch: "main", ahead: 1, behind: 2, added: 3, deleted: 4 };
+		const context: GitStatusContext = {
+			sessionManager: { getCwd: () => "/repo" },
+			ui: { requestRender },
+			gitCache: { result: status, ts: Date.now(), cwd: "/repo" },
+			gitRefreshInFlight: false,
+		};
+
+		// Must return immediately from cache — never block the render/input thread.
+		const result = gitStatusPrototype.getGitStatus.call(context);
+
+		expect(result).toStrictEqual(status);
+		// Fresh cache: no background refresh, no render request.
+		expect(requestRender).not.toHaveBeenCalled();
+		expect(context.gitRefreshInFlight).toBe(false);
+	});
+
+	it("does not start a second refresh while one is already in flight", () => {
+		const requestRender = vi.fn();
+		const status = { branch: "main", ahead: 0, behind: 0, added: 0, deleted: 0 };
+		const context: GitStatusContext = {
+			sessionManager: { getCwd: () => "/repo" },
+			ui: { requestRender },
+			// stale cache (old timestamp) so a refresh would normally trigger
+			gitCache: { result: status, ts: 0, cwd: "/repo" },
+			gitRefreshInFlight: true,
+		};
+
+		const result = gitStatusPrototype.getGitStatus.call(context);
+
+		// Returns the stale cached value (non-blocking) and does not schedule work.
+		expect(result).toStrictEqual(status);
+		expect(requestRender).not.toHaveBeenCalled();
+	});
+
+	it("returns undefined without blocking when the cwd has no cached status", () => {
+		const requestRender = vi.fn();
+		const context: GitStatusContext = {
+			sessionManager: { getCwd: () => "/other-repo" },
+			ui: { requestRender },
+			gitCache: undefined,
+			gitRefreshInFlight: true, // prevent the real async git spawn in this unit test
+		};
+
+		const result = gitStatusPrototype.getGitStatus.call(context);
+
+		expect(result).toBeUndefined();
+		expect(requestRender).not.toHaveBeenCalled();
+	});
+});
 
 describe("clear-on-shrink status spacing", () => {
 	it("reserves status height only on the main-screen renderer", () => {

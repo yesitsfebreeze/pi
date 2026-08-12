@@ -3,7 +3,6 @@
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
 
-import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -316,6 +315,47 @@ function getLoginProviderSearchText(provider: LoginProviderCompletionOption): st
 		.map((authType) => `${authType} ${formatAuthSelectorProviderType(authType)}`)
 		.join(" ");
 	return `${provider.id} ${provider.name} ${authTypes}`;
+}
+
+/**
+ * Run `git` asynchronously so the render/input thread never blocks.
+ * Synchronous `spawnSync("git")` on the status-line render path froze the
+ * whole TUI — keystrokes and raw-mode Ctrl+C stopped being delivered until git
+ * returned, degrading into an "input hangs, Ctrl+C does nothing" lockup that
+ * worsened over a long session as the working tree grew. Resolves/rejects with
+ * trimmed stdout; rejects on non-zero exit, spawn error, or abort (timeout).
+ */
+function runGitAsync(cwd: string, args: string[], signal: AbortSignal): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let settled = false;
+		const onAbort = () => {
+			try {
+				child.kill("SIGKILL");
+			} catch {
+				/* process already exited */
+			}
+		};
+		const finish = (err?: Error) => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener("abort", onAbort);
+			if (err) reject(err);
+			else resolve(stdout.trim());
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		child.stdout.setEncoding("utf-8");
+		child.stdout.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.on("error", (err) => finish(err));
+		child.on("close", (code) => {
+			if (signal.aborted) finish(new Error("git aborted"));
+			else if (code !== 0) finish(new Error(`git exited ${code}`));
+			else finish();
+		});
+	});
 }
 
 function formatLoginProviderCompletionDescription(provider: LoginProviderCompletionOption): string {
@@ -4926,55 +4966,81 @@ export class InteractiveMode {
 		};
 	}
 
-	private gitCache: { result: GitStatus; ts: number } | undefined;
+	private gitCache: { result: GitStatus | undefined; ts: number; cwd: string } | undefined;
+	private gitRefreshInFlight = false;
+	private static readonly GIT_CACHE_TTL_MS = 5000;
+	private static readonly GIT_FAILURE_BACKOFF_MS = 30_000;
+	private static readonly GIT_REFRESH_TIMEOUT_MS = 5000;
+
+	/**
+	 * Return cached git status for the status line. This MUST stay synchronous
+	 * and non-blocking: it is called from the status-line render path on every
+	 * keystroke. A stale or missing cache triggers a background refresh via
+	 * async `git` (see {@link refreshGitStatus}) and re-renders when it lands.
+	 * Blocking here freezes the whole TUI — stdin `data` events and raw-mode
+	 * Ctrl+C stop being delivered until the subprocess returns, which over a
+	 * long session (as the working tree grows and `git diff` slows) degrades
+	 * into the "input hangs, Ctrl+C does nothing" lockup.
+	 */
 	private getGitStatus(): GitStatus | undefined {
 		const cwd = this.sessionManager.getCwd();
 		if (!cwd) return undefined;
-		// cache for 5s to avoid spamming git on every render tick
 		const now = Date.now();
-		if (this.gitCache && now - this.gitCache.ts < 5000) return this.gitCache.result;
-		try {
-			const exec = (args: string[]) => {
-				const r = child_process.spawnSync("git", args, { cwd, timeout: 2000 });
-				if (r.error || r.status !== 0) throw new Error();
-				return r.stdout.toString().trim();
-			};
-			const branch = exec(["rev-parse", "--abbrev-ref", "HEAD"]);
-			let ahead = 0,
-				behind = 0;
+		const cached = this.gitCache;
+		const ttl =
+			cached?.result === undefined
+				? InteractiveMode.GIT_FAILURE_BACKOFF_MS
+				: InteractiveMode.GIT_CACHE_TTL_MS;
+		const fresh = cached?.cwd === cwd && now - cached.ts < ttl;
+		if (fresh) return cached!.result;
+		if (!this.gitRefreshInFlight) void this.refreshGitStatus(cwd);
+		return cached?.cwd === cwd ? cached.result : undefined;
+	}
+
+	private refreshGitStatus(cwd: string): void {
+		if (this.gitRefreshInFlight) return;
+		this.gitRefreshInFlight = true;
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), InteractiveMode.GIT_REFRESH_TIMEOUT_MS);
+		const exec = (args: string[]): Promise<string> =>
+			runGitAsync(cwd, args, controller.signal).catch(() => {
+				throw new Error("git failed");
+			});
+		void (async () => {
 			try {
-				const ab = exec(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
-				const [beh, ah] = ab.split(/\s+/);
-				ahead = parseInt(ah ?? "0", 10) || 0;
-				behind = parseInt(beh ?? "0", 10) || 0;
-			} catch {
-				/* no upstream */
-			}
-			let added = 0,
-				deleted = 0;
-			try {
-				const diff = exec(["diff", "--numstat"]);
-				const staged = (() => {
-					try {
-						return exec(["diff", "--cached", "--numstat"]);
-					} catch {
-						return "";
-					}
-				})();
-				for (const line of `${diff}\n${staged}`.split("\n")) {
-					const parts = line.split(/\s+/);
-					added += parseInt(parts[0] ?? "0", 10) || 0;
-					deleted += parseInt(parts[1] ?? "0", 10) || 0;
+				const branch = await exec(["rev-parse", "--abbrev-ref", "HEAD"]);
+				let ahead = 0;
+				let behind = 0;
+				try {
+					const ab = await exec(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+					const [beh, ah] = ab.split(/\s+/);
+					ahead = parseInt(ah ?? "0", 10) || 0;
+					behind = parseInt(beh ?? "0", 10) || 0;
+				} catch {
+					/* no upstream */
 				}
+				let added = 0;
+				let deleted = 0;
+				try {
+					const diff = await exec(["diff", "--numstat"]);
+					const staged = await exec(["diff", "--cached", "--numstat"]).catch(() => "");
+					for (const line of `${diff}\n${staged}`.split("\n")) {
+						const parts = line.split(/\s+/);
+						added += parseInt(parts[0] ?? "0", 10) || 0;
+						deleted += parseInt(parts[1] ?? "0", 10) || 0;
+					}
+				} catch {
+					/* no changes */
+				}
+				this.gitCache = { result: { branch, ahead, behind, added, deleted }, ts: Date.now(), cwd };
 			} catch {
-				/* no changes */
+				this.gitCache = { result: undefined, ts: Date.now(), cwd };
+			} finally {
+				clearTimeout(timeout);
+				this.gitRefreshInFlight = false;
+				this.ui.requestRender();
 			}
-			const result: GitStatus = { branch, ahead, behind, added, deleted };
-			this.gitCache = { result, ts: now };
-			return result;
-		} catch {
-			return undefined;
-		}
+		})();
 	}
 
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
