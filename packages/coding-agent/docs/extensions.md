@@ -1608,6 +1608,26 @@ pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) => {
 pi.appendEntry("status-card", { title: "Indexed files", count: 17 });
 ```
 
+### pi.registerHealthCheck(check)
+
+Register a health check that the doctor probe (`doctor_probe` tool and `/doctor` command) runs alongside its built-in checks (git, bus, logs, MCP). Each check gets its own row in the health table, prefixed with the extension's filename.
+
+```typescript
+pi.registerHealthCheck({
+  name: "myext:config",
+  description: "Verify myext config is valid",
+  timeoutMs: 5000,
+  async run(ctx) {
+    // ctx is the standard ExtensionContext (ctx.cwd, ctx.model, ...)
+    // Throwing is treated as FAIL with the error message.
+    const ok = await checkSomething(ctx.cwd);
+    return { status: ok ? "PASS" : "FAIL", detail: ok ? "valid" : "misconfigured" };
+  },
+});
+```
+
+`status` is one of `"FAIL" | "DIRTY" | "PASS" | "OK" | "SKIP"`. The probe runs all extension checks concurrently; each is bounded by its own `timeoutMs` (default 10s). Checks are discovered dynamically on every probe, so newly registered checks (e.g. added at runtime via a command) are picked up without a reload. When no `ExtensionContext` is available (e.g. the tool runs outside a session), extension checks report `SKIP`.
+
 ### pi.registerShortcut(shortcut, options)
 
 Register a keyboard shortcut. See [keybindings.md](keybindings.md) for the shortcut format and built-in keybindings.

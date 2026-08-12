@@ -18,7 +18,7 @@
 - No `any` unless absolutely necessary.
 - Inline single-line helpers that have only one call site.
 - Check node_modules for external API types; don't guess.
-- **No inline imports** (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only.
+- **No inline imports** (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only. The only exceptions are (a) lazy-loading optional native/`node:` modules that can't be statically imported without forcing them into the bundle or breaking load order (e.g. `utils/photon.ts`'s `await import("@silvia-odwyer/photon-node")`, `bun/cli.ts`'s ordered `await import("./register-bedrock.ts")` / `await import("../cli.ts")`, and the `*.lazy.ts` wrappers under `packages/ai`), and (b) type-only references via a top-level `import type` — never write `typeof import("pkg")` inline; add a top-level `import type * as Ns from "pkg"` and use `typeof Ns`.
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
 - Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
 - Always ask before removing functionality or code that appears intentional.
@@ -120,8 +120,8 @@ Rules:
 
 Attribution:
 
-- Internal (from issues): `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
-- External contributions: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
+- Internal (from issues): `Fixed foo bar ([#123](https://github.com/yesitsfebreeze/pi/issues/123))`
+- External contributions: `Added feature X ([#456](https://github.com/yesitsfebreeze/pi/pull/456) by [@username](https://github.com/username))`
 
 ## Releasing
 
