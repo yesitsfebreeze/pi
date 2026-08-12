@@ -736,7 +736,7 @@ describe("TUI overlay non-capturing", () => {
 			}
 		});
 
-		it("temporarily invisible focused overlay with null preFocus restores when visible again", async () => {
+		it("temporarily invisible focused overlay with null preFocus keeps focus to avoid lockup", async () => {
 			const terminal = new VirtualTerminal(80, 24);
 			const tui: TUI = new TuiMainScreen(terminal);
 			const overlay = new FocusableOverlay(["OVERLAY"]);
@@ -748,11 +748,14 @@ describe("TUI overlay non-capturing", () => {
 				visible = false;
 				terminal.sendInput("x");
 				await renderAndFlush(tui, terminal);
-				assert.deepStrictEqual(overlay.inputs, []);
+				// Overlay keeps focus when invisible with no valid fallback (preFocus
+				// is null because no component had focus before the overlay). Going
+				// null here would silently drop all input and lock the TUI.
+				assert.deepStrictEqual(overlay.inputs, ["x"]);
 				visible = true;
 				terminal.sendInput("y");
 				await renderAndFlush(tui, terminal);
-				assert.deepStrictEqual(overlay.inputs, ["y"]);
+				assert.deepStrictEqual(overlay.inputs, ["x", "y"]);
 			} finally {
 				tui.stop();
 			}

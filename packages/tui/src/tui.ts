@@ -464,6 +464,13 @@ export abstract class TuiBase extends Container implements TUI {
 			} else if (overlayFocusRestore === "clear") {
 				this.clearOverlayFocusRestore();
 			}
+			// When restoring focus away from an overlay and the target is null
+			// (e.g. overlay had null preFocus), keep the previous focus rather
+			// than going null. Going null silently drops all keyboard input and
+			// makes the TUI appear locked, with no recovery path.
+			if (nextFocus === null && overlayFocusRestore !== "clear" && previousFocus) {
+				nextFocus = previousFocus;
+			}
 		}
 
 		if (isFocusable(this.focusedComponent)) {
