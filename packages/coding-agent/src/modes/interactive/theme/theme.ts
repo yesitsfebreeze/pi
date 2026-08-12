@@ -271,6 +271,9 @@ function hexTo256(hex: string): number {
 
 function fgAnsi(color: string | number, mode: ColorMode): string {
 	if (color === "") return "\x1b[39m";
+	if (color === "dim") return "\x1b[2m";
+	if (color === "bold") return "\x1b[1m";
+	if (color === "reverse") return "\x1b[7m";
 	if (typeof color === "number") return `\x1b[38;5;${color}m`;
 	if (color.startsWith("#")) {
 		if (mode === "truecolor") {
@@ -286,6 +289,9 @@ function fgAnsi(color: string | number, mode: ColorMode): string {
 
 function bgAnsi(color: string | number, mode: ColorMode): string {
 	if (color === "") return "\x1b[49m";
+	if (color === "dim") return "\x1b[2m";
+	if (color === "bold") return "\x1b[1m";
+	if (color === "reverse") return "\x1b[7m";
 	if (typeof color === "number") return `\x1b[48;5;${color}m`;
 	if (color.startsWith("#")) {
 		if (mode === "truecolor") {
@@ -463,6 +469,86 @@ export class Theme {
 }
 
 // ============================================================================
+// Terminal-Native Attribute Theme — zero colour codes, only SGR attributes
+// against the terminal's own fg/bg. No ANSI palette index assumptions.
+// ============================================================================
+
+type Attr = "dim" | "bold" | "reverse" | "";
+
+function themeAttrs(fg: Record<ThemeColor, Attr>, bg: Record<ThemeBg, Attr>): Theme {
+	const fgColors = {} as Record<ThemeColor, string>;
+	const bgColors = {} as Record<ThemeBg, string>;
+	for (const [k, v] of Object.entries(fg)) fgColors[k as ThemeColor] = v;
+	for (const [k, v] of Object.entries(bg)) bgColors[k as ThemeBg] = v;
+	return new Theme(fgColors, bgColors, "truecolor", { name: "terminal" });
+}
+
+const TERMINAL_FG: Record<ThemeColor, Attr> = {
+	accent: "reverse",
+	border: "dim",
+	borderAccent: "reverse",
+	borderMuted: "dim",
+	success: "bold",
+	error: "reverse",
+	warning: "bold",
+	muted: "dim",
+	dim: "dim",
+	text: "",
+	thinkingText: "dim",
+	searchMatchText: "reverse",
+	userMessageText: "",
+	customMessageText: "",
+	customMessageLabel: "bold",
+	toolTitle: "bold",
+	toolOutput: "dim",
+	mdHeading: "bold",
+	mdLink: "reverse",
+	mdLinkUrl: "dim",
+	mdCode: "reverse",
+	mdCodeBlock: "dim",
+	mdCodeBlockBorder: "dim",
+	mdQuote: "dim",
+	mdQuoteBorder: "dim",
+	mdHr: "dim",
+	mdListBullet: "reverse",
+	toolDiffAdded: "bold",
+	toolDiffRemoved: "reverse",
+	toolDiffContext: "dim",
+	syntaxComment: "dim",
+	syntaxKeyword: "bold",
+	syntaxFunction: "",
+	syntaxVariable: "dim",
+	syntaxString: "reverse",
+	syntaxNumber: "bold",
+	syntaxType: "bold",
+	syntaxOperator: "",
+	syntaxPunctuation: "",
+	thinkingOff: "dim",
+	thinkingMinimal: "dim",
+	thinkingLow: "dim",
+	thinkingMedium: "",
+	thinkingHigh: "bold",
+	thinkingXhigh: "reverse",
+	thinkingMax: "reverse",
+	bashMode: "bold",
+};
+
+const TERMINAL_BG: Record<ThemeBg, Attr> = {
+	selectedBg: "reverse",
+	scrollbarThumb: "",
+	searchMatchBg: "reverse",
+	userMessageBg: "reverse",
+	customMessageBg: "",
+	toolPendingBg: "",
+	toolSuccessBg: "",
+	toolErrorBg: "",
+};
+
+export function createTerminalNativeTheme(): Theme {
+	return themeAttrs(TERMINAL_FG, TERMINAL_BG);
+}
+
+// ============================================================================
 // Theme Loading
 // ============================================================================
 
@@ -473,9 +559,11 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 		const themesDir = getThemesDir();
 		const darkPath = path.join(themesDir, "dark.json");
 		const lightPath = path.join(themesDir, "light.json");
+		const terminalPath = path.join(themesDir, "terminal.json");
 		BUILTIN_THEMES = {
 			dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
 			light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
+			terminal: JSON.parse(fs.readFileSync(terminalPath, "utf-8")) as ThemeJson,
 		};
 	}
 	return BUILTIN_THEMES;
@@ -830,7 +918,7 @@ export async function detectTerminalThemeForAuto({
 }
 
 export function getDefaultTheme(): string {
-	return detectTerminalBackgroundFromEnv().theme;
+	return "terminal";
 }
 
 // ============================================================================
@@ -881,10 +969,9 @@ export function initTheme(themeName?: string, enableWatcher: boolean = false): v
 			startThemeWatcher();
 		}
 	} catch (_error) {
-		// Theme is invalid - fall back to dark theme silently
-		currentThemeName = "dark";
-		setGlobalTheme(loadTheme("dark"));
-		// Don't start watcher for fallback theme
+		// Theme is invalid — fall back to terminal theme silently
+		currentThemeName = "terminal";
+		setGlobalTheme(loadTheme("terminal"));
 	}
 }
 
@@ -900,10 +987,9 @@ export function setTheme(name: string, enableWatcher: boolean = false): { succes
 		}
 		return { success: true };
 	} catch (error) {
-		// Theme is invalid - fall back to dark theme
-		currentThemeName = "dark";
-		setGlobalTheme(loadTheme("dark"));
-		// Don't start watcher for fallback theme
+		// Theme is invalid — fall back to terminal theme
+		currentThemeName = "terminal";
+		setGlobalTheme(loadTheme("terminal"));
 		return {
 			success: false,
 			error: error instanceof Error ? error.message : String(error),
