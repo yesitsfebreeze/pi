@@ -34,6 +34,7 @@ export {
 export { type SettingItem, SettingsList, type SettingsListTheme } from "./components/settings-list.ts";
 export { Spacer } from "./components/spacer.ts";
 export { Text } from "./components/text.ts";
+export { TreeList, type TreeListTheme, type TreeNode } from "./components/tree-list.ts";
 export { TruncatedText } from "./components/truncated-text.ts";
 export {
 	type StackChild,

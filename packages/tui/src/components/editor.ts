@@ -323,6 +323,8 @@ export class Editor implements Component, Focusable {
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
+	/** Called when ArrowDown is pressed at the last visual line end. */
+	public onCursorDownAtEnd?: () => void;
 
 	constructor(tui: TUI, theme: EditorTheme, options: EditorOptions = {}) {
 		this.tui = tui;
@@ -811,8 +813,12 @@ export class Editor implements Component, Focusable {
 			if (this.historyIndex > -1 && this.isOnLastVisualLine()) {
 				this.navigateHistory(1);
 			} else if (this.isOnLastVisualLine()) {
-				// Already at bottom - jump to end of line
-				this.moveToLineEnd();
+				const currentLine = this.state.lines[this.state.cursorLine] || "";
+				if (this.state.cursorCol >= currentLine.length && this.onCursorDownAtEnd) {
+					this.onCursorDownAtEnd();
+				} else {
+					this.moveToLineEnd();
+				}
 			} else {
 				this.moveCursor(1, 0);
 			}
@@ -1234,7 +1240,11 @@ export class Editor implements Component, Focusable {
 
 	private submitValue(): void {
 		this.cancelAutocomplete();
-		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
+		let result = this.expandPasteMarkers(this.state.lines.join("\n"));
+		// Strip any unresolved paste markers (e.g. typed literally or pastes cleared
+		// by setText between paste and submit) so they never reach the agent.
+		result = result.replace(PASTE_MARKER_REGEX, "");
+		result = result.trim();
 
 		this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
 		this.pastes.clear();
