@@ -37,8 +37,8 @@ export interface WalkieTalkieBus extends WalkieTalkie {
 	join(scope: string): void;
 	/** Leave a scope. */
 	leave(scope: string): void;
-	/** Publish one line about current work to peers. */
-	doing(text: string): void;
+	/** Publish one line about current work to peers (undefined clears). */
+	doing(text: string | undefined): void;
 }
 
 export type { Message as ChannelMessage };
@@ -76,6 +76,7 @@ export function registerWalkieTalkieTools(
 	repo: string,
 	sessionId: string,
 	onScopesChange: (scopes: string[]) => void,
+	onDoing?: (doing: string | undefined) => void,
 ): void {
 	// crew_send — send a message to a session or scope
 	pi.registerTool({
@@ -189,6 +190,10 @@ export function registerWalkieTalkieTools(
 			const updated = [...current];
 			onScopesChange(updated);
 			const doing = typeof params.doing === "string" ? params.doing : undefined;
+			// Publish through the bus so peers actually see it — the description
+			// promises "doing publishes one line about your current work to every
+			// peer", and only bus.doing() feeds the announce payload.
+			if (doing !== undefined) onDoing?.(doing);
 			const parts: string[] = [];
 			if (joined.length) parts.push(`joined: ${joined.join(", ")}`);
 			if (left.length) parts.push(`left: ${left.join(", ")}`);
@@ -381,7 +386,7 @@ export function startWalkieTalkie(
 			myScopes = myScopes.filter((s) => s !== scope);
 			refreshPeer();
 		},
-		doing(text: string) {
+		doing(text: string | undefined) {
 			doing = text;
 			refreshPeer();
 		},
@@ -456,6 +461,14 @@ export function startWalkieTalkie(
 		const msgs = crew.drain();
 		if (msgs.length) {
 			const urgent = msgs.filter((m) => m.urgent);
+			const ordinary = msgs.filter((m) => !m.urgent);
+			// Ordinary talk must be delivered, not just consumed by the cursor —
+			// a non-urgent crew_send to an idle session would otherwise be
+			// silently lost. It lands as a plain followUp; urgent cuts in as before.
+			if (ordinary.length) {
+				const text = ordinary.map((m) => `[${m.from}${m.re ? `, re ${m.re}` : ""}]\n${m.text}`).join("\n\n");
+				pi.sendUserMessage(`# Walkie-Talkie\n\n${text}`, { deliverAs: "followUp" });
+			}
 			if (urgent.length) {
 				const text = urgent.map((m) => `[${m.from}, URGENT${m.re ? `, re ${m.re}` : ""}]\n${m.text}`).join("\n\n");
 				pi.sendUserMessage(`# Walkie-Talkie — URGENT\n\n${text}\n\nAct on this at your next boundary.`, {
@@ -485,10 +498,17 @@ export function startWalkieTalkie(
 		}
 	});
 
-	registerWalkieTalkieTools(pi, bus, repo, sessionId, (updated) => {
-		myScopes = updated;
-		refreshPeer();
-	});
+	registerWalkieTalkieTools(
+		pi,
+		bus,
+		repo,
+		sessionId,
+		(updated) => {
+			myScopes = updated;
+			refreshPeer();
+		},
+		(doingText) => bus.doing(doingText),
+	);
 
 	return { crew: bus, stop: () => leave(repo, sessionId) };
 }

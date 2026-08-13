@@ -470,11 +470,20 @@ describe("walkie-talkie bridge", () => {
 		expect(h.sent).toHaveLength(1);
 		expect(h.sent[0].opts?.deliverAs).toBe("followUp");
 		expect(h.sent[0].text).toMatch(/URGENT/);
-		// non-urgent mail is NOT re-injected (it waits for crew_recv)
-		h.sent.length = 0;
+	});
+
+	it("ordinary mail is delivered as a plain follow-up on agent_settled", async () => {
+		const h = makeApi();
+		startWalkieTalkie(h.api, REPO, "me", [], REPO);
+		// A settle is the cheap delivery point for ordinary talk: draining must
+		// deliver it, not consume it silently (a crew_send to an idle session
+		// would otherwise be lost unless the recipient happens to crew_recv).
 		post(REPO, { to: "me", from: "alice", text: "whenever" });
 		await h.fire("agent_settled", { type: "agent_settled" });
-		expect(h.sent).toHaveLength(0);
+		expect(h.sent).toHaveLength(1);
+		expect(h.sent[0].opts?.deliverAs).toBe("followUp");
+		expect(h.sent[0].text).toContain("whenever");
+		expect(h.sent[0].text).not.toMatch(/URGENT/);
 	});
 
 	it("publishes working/idle state and mission/task/next from the recap", async () => {
