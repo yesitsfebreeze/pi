@@ -10,7 +10,10 @@ export default mergeConfig(
 			environment: "node",
 			testTimeout: 30000,
 			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
-			env: { PI_OFFLINE: "1" },
+			// PI_KERN_OFF keeps the memory extension from shelling out to a real
+			// `kern` binary, which would create an LMDB store under each test's temp
+			// cwd and make results depend on whether the developer has kern installed.
+			env: { PI_OFFLINE: "1", PI_KERN_OFF: "1" },
 			unstubEnvs: true,
 			reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 			silent: "passed-only",
