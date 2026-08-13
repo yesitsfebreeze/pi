@@ -1,6 +1,6 @@
 ---
 description: proves behavior and finds regressions — test strategy, executable tests, coverage gaps
-model: zai/glm-5.2
+role: balanced
 timeout: 30
 ---
 

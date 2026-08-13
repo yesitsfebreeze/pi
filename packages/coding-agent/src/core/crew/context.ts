@@ -143,7 +143,7 @@ function detectCore(cwd: string) {
 function detectGuidebook(cwd: string) {
 	const lines = ["| Working on... | Primary files |", "|---|---|"];
 	// Top-level dirs that look like packages
-	let entries;
+	let entries: string[];
 	try {
 		entries = readDirNames(cwd);
 	} catch {

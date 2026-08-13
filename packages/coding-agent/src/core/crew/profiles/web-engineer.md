@@ -1,6 +1,6 @@
 ---
 description: builds a website or web feature — working UI/API change, accessible, responsive
-model: zai/glm-5.2
+role: balanced
 timeout: 30
 ---
 

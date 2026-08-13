@@ -1,6 +1,6 @@
 ---
 description: read-only reconnaissance — answers "how does this work / where does it live"
-model: zai/glm-5.2
+role: fast
 exclude: edit, write
 thinking: low
 timeout: 15

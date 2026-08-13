@@ -2,22 +2,11 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getPiInvocation } from "../pi-invocation.ts";
 import type { CrewProfile, SyncOptions, SyncResult, SyncTask, SyncUsage } from "./types.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
-
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) return { command: process.execPath, args };
-	return { command: "pi", args };
-}
 
 async function runSingle(
 	profile: CrewProfile,
@@ -27,7 +16,7 @@ async function runSingle(
 ): Promise<SyncResult> {
 	const cwd = opts.cwdOverride ?? opts.cwd;
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	const model = opts.model ?? profile.model;
+	const model = opts.model ?? opts.resolveModel?.(profile) ?? profile.model;
 	if (model) args.push("--model", model);
 	const thinking = opts.thinking ?? profile.thinking;
 	if (thinking) args.push("--thinking", thinking);
@@ -161,6 +150,21 @@ function isFailed(r: SyncResult): boolean {
 	return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
 }
 
+/** Render the collected usage/model counters as a trailing resource line — the
+ *  only place SyncResult.usage/.model are consumed (they were collected on
+ *  every run and then discarded). */
+function formatSyncUsage(r: SyncResult): string {
+	const u = r.usage;
+	const parts: string[] = [];
+	if (r.model) parts.push(`model: ${r.model}`);
+	const tokens = u.input + u.output;
+	if (tokens > 0) parts.push(`tokens: ↑${u.input} ↓${u.output}`);
+	if (u.cost > 0) parts.push(`cost: $${u.cost.toFixed(4)}`);
+	if (u.cacheRead + u.cacheWrite > 0) parts.push(`cache: ${u.cacheRead}r/${u.cacheWrite}w`);
+	if (u.turns > 0) parts.push(`turns: ${u.turns}`);
+	return parts.length > 0 ? parts.join("  ") : "";
+}
+
 export async function runSingleSync(
 	profile: CrewProfile,
 	task: string,
@@ -172,7 +176,8 @@ export async function runSingleSync(
 		const err = r.errorMessage || r.stderr || r.output;
 		return `Agent ${r.stopReason || "failed"}: ${err}`;
 	}
-	return r.output;
+	const usageLine = formatSyncUsage(r);
+	return usageLine ? `${r.output}\n\n${usageLine}` : r.output;
 }
 
 export async function runParallelSync(

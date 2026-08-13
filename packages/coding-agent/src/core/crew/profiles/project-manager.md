@@ -1,6 +1,6 @@
 ---
 description: sequences delivery — dependency-aware plan, owners, risks, next action
-model: zai/glm-5.2
+role: balanced
 exclude: edit, write
 timeout: 20
 ---

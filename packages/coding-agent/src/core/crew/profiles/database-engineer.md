@@ -1,6 +1,6 @@
 ---
 description: designs or changes persistent data — schema, query, migration, rollback, integrity
-model: zai/glm-5.2
+role: balanced
 timeout: 30
 ---
 

@@ -1,6 +1,6 @@
 ---
 description: operates the delivery substrate — build, deploy, observability, rollback
-model: zai/glm-5.2
+role: balanced
 timeout: 30
 ---
 

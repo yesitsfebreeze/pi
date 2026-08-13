@@ -1,10 +1,12 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getPiInvocation } from "../pi-invocation.ts";
+import { slug } from "./channel.ts";
 import { briefingBlock } from "./context.ts";
-import type { CrewProfile, CrewRun, CrewSpec } from "./types.ts";
+import type { CrewRun, CrewSpec } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -33,15 +35,6 @@ function stateRoot(): string {
 	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "pi", "crew");
 }
 
-function slug(repo: string): string {
-	return (
-		repo
-			.replace(/^\/+/, "")
-			.replace(/[^\w.-]+/g, "-")
-			.slice(-80) || "root"
-	);
-}
-
 function repoDir(repo: string): string {
 	return join(stateRoot(), slug(repo));
 }
@@ -62,6 +55,7 @@ const PERSISTED: string[] = [
 	"depth",
 	"exitCode",
 	"providerError",
+	"parentSessionId",
 ];
 
 function persist(run: CrewRun): void {
@@ -103,6 +97,7 @@ export function load(repo: string): number {
 				exitCode: m.exitCode != null ? Number(m.exitCode) : null,
 				dir: join(dir, entry),
 				depth: Number(m.depth ?? 0),
+				parentSessionId: m.parentSessionId ? String(m.parentSessionId) : undefined,
 			});
 			n += 1;
 			const tail = /-(\d+)$/.exec(String(m.handle));
@@ -180,7 +175,7 @@ function briefing(spec: CrewSpec, handle: string): string {
 		"## Reporting back",
 		"",
 		`On this repo's walkie-talkie channel you are \`${handle}\` and your parent is \`${spec.parentAddr}\`.`,
-		`Use \`wt_send\` with \`to: ${spec.parentAddr}\` and \`re: ${handle}\`:`,
+		`Use \`crew_send\` with \`to: ${spec.parentAddr}\` and \`re: ${handle}\`:`,
 		"",
 		"- once, as soon as you know what you are actually doing,",
 		"- at any real milestone, and immediately if you are blocked or the task is wrong.",
@@ -351,6 +346,7 @@ export function start(spec: CrewSpec): { run?: CrewRun; error?: string } {
 		dir,
 		profile: spec.profile,
 		depth: spec.depth,
+		parentSessionId: spec.parentAddr,
 	};
 	runs.set(handle, run);
 	try {
@@ -387,6 +383,7 @@ export function resume(run: CrewRun, spec: CrewSpec, message?: string): { error?
 	run.stderr = "";
 	run.profile = spec.profile;
 	run.state = "queued";
+	run.parentSessionId = spec.parentAddr;
 	queueSpecs.set(run.handle, spec);
 	resumeFiles.set(run.handle, file);
 
@@ -406,8 +403,9 @@ function spawnRun(run: CrewRun, spec: CrewSpec): void {
 	const prompt = resumeFiles.get(run.handle) ?? join(run.dir, "prompt.md");
 	resumeFiles.delete(run.handle);
 	const args = buildArgs(run, spec, prompt);
+	const invocation = getPiInvocation(args);
 
-	const child = spawn(process.env.CREW_PI_BIN || "pi", args, {
+	const child = spawn(invocation.command, invocation.args, {
 		cwd: run.cwd,
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],

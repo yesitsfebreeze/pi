@@ -26,6 +26,7 @@ export function parseProfile(name: string, text: string, source: string): CrewPr
 		description: head.description || `the ${name} agent`,
 		persona: head.persona || undefined,
 		model: head.model || undefined,
+		role: head.role || undefined,
 		thinking: head.thinking || undefined,
 		tools: csv(head.tools),
 		exclude: csv(head.exclude),

@@ -1,6 +1,6 @@
 ---
 description: reviews a diff, branch or file for defects — finds them, does not fix them
-model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+role: balanced
 exclude: edit, write
 timeout: 20
 ---

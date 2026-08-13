@@ -1,6 +1,6 @@
 ---
 description: shapes interaction — task flow, states, accessibility criteria, implementation brief
-model: zai/glm-5.2
+role: balanced
 exclude: edit, write
 timeout: 20
 ---

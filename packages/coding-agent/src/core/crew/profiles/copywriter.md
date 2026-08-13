@@ -1,6 +1,6 @@
 ---
 description: writes persuasive or user-facing text — copy variants meeting brief and voice
-model: zai/glm-5.2
+role: fast
 exclude: edit, write
 timeout: 20
 ---

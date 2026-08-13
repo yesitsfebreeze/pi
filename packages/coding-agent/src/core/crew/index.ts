@@ -6,8 +6,11 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "../../core/extensions/types.ts";
-import { briefingBlock, snapshot } from "./context.ts";
-import { type DiscoveryTask, planDiscovery } from "./discovery.ts";
+import { classifyAll, pickForRole, readLedger } from "../model-ledger.ts";
+import type { ModelRegistry } from "../model-registry.ts";
+import { resolvePiDirs } from "../pi-dirs.ts";
+import { startWalkieTalkie, type WalkieTalkie } from "./crew-bridge.ts";
+import { planDiscovery, updateNode } from "./discovery.ts";
 import { getProfile, loadProfiles, parseProfile, renderProfileList } from "./profiles.ts";
 import {
 	activeLabel,
@@ -43,20 +46,21 @@ export function createCrewExtension(): {
 			let repo = process.cwd();
 			let cwd = process.cwd();
 			let session = `pi-${process.pid}`;
+			let registry: ModelRegistry | undefined;
 			let refresh: ReturnType<typeof setInterval> | undefined;
 			const depth: number = Number(process.env.CREW_DEPTH) || 0;
 			const STATUS_KEY = "crew";
+			// Seed scopes from PI_SCOPES — a dispatched crew child is born in its
+			// handle (so the parent can steer it by handle) and its parent's groups.
+			const seedScopes = (process.env.PI_SCOPES ?? "")
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
 
-			interface WalkieTalkie {
-				addr(): string;
-				scopes(): string[];
-				send(to: string, body: string, opts?: { re?: string; urgent?: boolean }): void;
-			}
-
-			const wt = (): WalkieTalkie | undefined =>
-				(globalThis as Record<string, unknown>).__wt as WalkieTalkie | undefined;
-			const myAddr = (): string => wt()?.addr?.() ?? session;
-			const myScopes = (): string[] => wt()?.scopes?.() ?? [];
+			const crew = (): WalkieTalkie | undefined =>
+				(globalThis as Record<string, unknown>).__crew as WalkieTalkie | undefined;
+			const myAddr = (): string => crew()?.addr?.() ?? session;
+			const myScopes = (): string[] => crew()?.scopes?.() ?? [];
 
 			// ── helpers ────────────────────────────────────────────────────
 			function paint(): void {
@@ -98,7 +102,7 @@ export function createCrewExtension(): {
 
 			const fallback: CrewProfile = parseProfile(
 				"worker",
-				"---\ndescription: general worker\n---\nDo exactly the task you were given, nothing adjacent to it.",
+				"---\ndescription: general worker\nrole: balanced\n---\nDo exactly the task you were given, nothing adjacent to it.",
 				"(built in)",
 			);
 
@@ -108,16 +112,31 @@ export function createCrewExtension(): {
 				timeout?: number;
 			}
 
+			// Resolve which model a dispatch runs on. Priority: explicit override →
+			// profile's literal `model:` → role tier resolved against the model
+			// ledger (cheapest available model in that tier).
+			function resolveModel(profile: CrewProfile, explicit?: string): string | undefined {
+				if (explicit) return explicit;
+				if (profile.model) return profile.model;
+				if (!registry) return undefined;
+				const available = registry.getAvailable();
+				const ledger = readLedger();
+				const entries = ledger?.entries ?? classifyAll(available);
+				const picked = pickForRole(profile.role ?? "balanced", available, entries);
+				return picked ? `${picked.provider}/${picked.id}` : undefined;
+			}
+
 			function doDispatch(agent: string, task: string, opts: DispatchOpts = {}): string {
 				const p = getProfile(repo, agent);
 				if (!p && agent !== "worker") return `crew: no profile "${agent}"\n\n${renderProfileList(repo)}`;
+				const profile = p ?? fallback;
 				const { run, error } = start({
 					agent,
 					task,
 					cwd: (opts.cwd ?? cwd) as string,
 					repo,
-					profile: p ?? fallback,
-					model: opts.model,
+					profile,
+					model: resolveModel(profile, opts.model),
 					timeoutMin: opts.timeout,
 					parentAddr: myAddr(),
 					scopes: myScopes(),
@@ -129,7 +148,7 @@ export function createCrewExtension(): {
 				return [
 					`${run.handle} dispatched (${agent}), ${where}, session ${run.sessionId}.`,
 					"Keep working — it reports over the channel and its result arrives as a follow-up.",
-					wt()
+					crew()
 						? `Steer it with \`crew\` action=say handle=${run.handle}.`
 						: "walkie-talkie is not loaded: this run is one-shot, you cannot steer it.",
 				].join("\n");
@@ -163,7 +182,7 @@ export function createCrewExtension(): {
 				const run = runs.get(handle);
 				if (!run) return `crew: no run "${handle}"`;
 				if (run.state !== "running") return `crew: ${handle} is ${run.state} — nothing to steer`;
-				const bus = wt();
+				const bus = crew();
 				if (!bus) return "crew: walkie-talkie is not loaded, so there is no channel to steer over";
 				bus.send(handle, text, { re: handle, urgent: true });
 				return `sent to ${handle} — it interrupts the run within a few seconds`;
@@ -183,7 +202,12 @@ export function createCrewExtension(): {
 				params: SyncParams,
 				signal: AbortSignal | undefined,
 			): Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }> {
-				const opts = { cwd, model: params.model, thinking: params.thinking };
+				const opts = {
+					cwd,
+					model: params.model,
+					thinking: params.thinking,
+					resolveModel: (profile: CrewProfile) => resolveModel(profile),
+				};
 				const profiles = loadProfiles(repo);
 				if (params.chain && params.chain.length > 0) {
 					return runChainSync(profiles, params.chain, opts, signal).then((text) => ({
@@ -240,8 +264,8 @@ export function createCrewExtension(): {
 						"3. Do NOT summarize file listings or document what code does line by line.",
 						"4. Keep it to ~15 lines. One fact per line, each with a one-line explanation.",
 						"5. Use markdown: `## Region-name`, then bullet points.",
-						"6. When done, run this to update the map:",
-						`   crew discovery update-node ${task.node.id} memory/${task.node.id}.md`,
+						"6. When done, update the discovery map via the crew tool:",
+						`   crew action=update-node node=${task.node.id} note=memory/${task.node.id}.md`,
 						"",
 						"You have write/edit tools. Use them to create the memory file. Only write",
 						"the memory file — do not modify any source code.",
@@ -252,6 +276,7 @@ export function createCrewExtension(): {
 						cwd,
 						repo,
 						profile: fallback,
+						model: resolveModel(fallback),
 						parentAddr: myAddr(),
 						scopes: myScopes(),
 						depth,
@@ -276,10 +301,27 @@ export function createCrewExtension(): {
 			// ── lifecycle ──────────────────────────────────────────────────
 			pi.on("session_start", (_e: unknown, ctx: ExtensionContext) => {
 				ui = ctx?.ui;
-				repo = ctx?.cwd ?? repo;
+				// Resolve the project root (walks up to .pi/.git) so the bus roots at
+				// the real repo, not whatever cwd the session happened to start in.
+				const resolved = ctx?.cwd ? resolvePiDirs(ctx.cwd) : undefined;
+				repo = resolved?.projectDir ?? ctx?.cwd ?? repo;
 				cwd = ctx?.cwd ?? cwd;
 				session = ctx?.sessionManager?.getSessionId?.() ?? session;
+				registry = ctx?.modelRegistry ?? registry;
 				load(cwd);
+				// Light the walkie-talkie bus now that repo/session/cwd are latched.
+				// Tools register here; crew `action=say` and the `crew_*` tools work
+				// from this point. Skipped when CREW_DEPTH > 0 is NOT done here —
+				// children need the bus too, so they can be steered and answer back.
+				startWalkieTalkie(pi, repo, session, seedScopes, cwd, () => {
+					const sm = ctx?.sessionManager;
+					if (!sm) return {};
+					const entries = sm.getEntries?.() ?? [];
+					return {
+						name: sm.getSessionName?.() ?? undefined,
+						messageCount: entries.filter((e) => e.type === "message").length,
+					};
+				});
 				const cut = [...runs.values()].filter((r) => r.state === "interrupted").length;
 				if (cut) ui?.notify?.(`crew: ${cut} interrupted run(s) waiting — /crew list`, "info");
 				paint();
@@ -318,6 +360,7 @@ export function createCrewExtension(): {
 						Type.Literal("clear"),
 						Type.Literal("sync"),
 						Type.Literal("discover"),
+						Type.Literal("update-node"),
 					]),
 					task: Type.Optional(
 						Type.String({
@@ -383,6 +426,16 @@ export function createCrewExtension(): {
 							{ description: "Array of {agent, task} for sequential sync execution" },
 						),
 					),
+					node: Type.Optional(
+						Type.String({
+							description: "update-node only: the node id to record in the discovery map.",
+						}),
+					),
+					note: Type.Optional(
+						Type.String({
+							description: "update-node only: the memory note path relative to .pi/context/.",
+						}),
+					),
 				}),
 				async execute(
 					_id: string,
@@ -392,6 +445,7 @@ export function createCrewExtension(): {
 					ctx: ExtensionContext,
 				) {
 					ui = ctx?.ui ?? ui;
+					registry = ctx?.modelRegistry ?? registry;
 					const out = (text: string) => ({
 						content: [{ type: "text" as const, text }],
 						details: {},
@@ -406,6 +460,17 @@ export function createCrewExtension(): {
 					}
 					if (a === "discover") {
 						return out(doDiscover());
+					}
+					if (a === "update-node") {
+						const nodeId = String(params.node ?? "");
+						const notePath = String(params.note ?? "");
+						if (!nodeId || !notePath) return out("update-node needs node and note");
+						try {
+							updateNode(cwd, nodeId, notePath);
+							return out(`discovery map updated: ${nodeId} → ${notePath}`);
+						} catch (e) {
+							return out(`update-node failed: ${e instanceof Error ? e.message : String(e)}`);
+						}
 					}
 					if (a === "start") {
 						if (!params.task) return out("start needs a task");
@@ -474,6 +539,16 @@ export function createCrewExtension(): {
 					note(doDispatch(agent, task));
 				},
 			} satisfies Omit<RegisteredCommand, "name" | "sourceInfo">);
+
+			pi.registerCommand("discover", {
+				description:
+					"Build or refresh the on-demand discovery map (map.json + per-region notes). Fans out one scout per stale region.",
+				handler: async (_args: string, ctx: ExtensionCommandContext) => {
+					ui = ctx.ui ?? ui;
+					const summary = doDiscover();
+					ctx.ui?.notify?.(summary, "info");
+				},
+			});
 		},
 	};
 }
@@ -494,6 +569,3 @@ export {
 	stopAll,
 } from "./runner.ts";
 export { runChainSync, runParallelSync, runSingleSync } from "./sync.ts";
-export { connectToParentAgent } from "./tcp-client.ts";
-export { createFrameParser, encodeFrame, writeFrame } from "./tcp-protocol.ts";
-export { startTcpServer } from "./tcp-server.ts";

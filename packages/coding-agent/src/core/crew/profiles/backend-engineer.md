@@ -1,6 +1,6 @@
 ---
 description: implements service behavior — endpoint/domain change, validation, tests
-model: zai/glm-5.2
+role: balanced
 timeout: 30
 ---
 

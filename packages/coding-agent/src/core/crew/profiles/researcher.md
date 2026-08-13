@@ -1,6 +1,6 @@
 ---
 description: studies an upstream repo, library or protocol and reports how it actually works
-model: zai/glm-5.2
+role: fast
 exclude: edit, write
 timeout: 25
 ---

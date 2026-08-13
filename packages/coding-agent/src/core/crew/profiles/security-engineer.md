@@ -1,6 +1,6 @@
 ---
 description: assesses or hardens a trust boundary — ranked findings or scoped mitigation
-model: zai/glm-5.2
+role: frontier
 exclude: edit, write
 timeout: 25
 ---

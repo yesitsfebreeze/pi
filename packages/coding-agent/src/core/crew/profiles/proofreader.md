@@ -1,6 +1,6 @@
 ---
 description: corrects supplied text — corrected text plus a list of material edits
-model: zai/glm-5.2
+role: fast
 exclude: edit, write
 timeout: 15
 ---

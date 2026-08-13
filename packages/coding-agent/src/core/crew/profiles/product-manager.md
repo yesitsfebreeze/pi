@@ -1,6 +1,6 @@
 ---
 description: clarifies product outcome — user story, acceptance criteria, priority rationale
-model: zai/glm-5.2
+role: balanced
 exclude: edit, write
 timeout: 20
 ---

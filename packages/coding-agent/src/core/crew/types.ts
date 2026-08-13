@@ -4,7 +4,10 @@ export interface CrewProfile {
 	name: string;
 	description: string;
 	persona?: string;
+	/** Explicit model override. When absent, the model is resolved from `role` via the model ledger. */
 	model?: string;
+	/** Role tier resolved against the model ledger to pick an available model. */
+	role?: string;
 	thinking?: string;
 	tools?: string[];
 	exclude?: string[];
@@ -51,6 +54,9 @@ export interface CrewRun {
 	killTimer?: ReturnType<typeof setTimeout>;
 	tool?: string;
 	providerError?: string;
+	/** Session id of the parent pi session that dispatched this run. Lets the
+	 *  session tree nest sub-agents under their exact parent instead of by cwd. */
+	parentSessionId?: string;
 }
 
 export interface SyncOptions {
@@ -58,6 +64,8 @@ export interface SyncOptions {
 	model?: string;
 	thinking?: string;
 	cwdOverride?: string;
+	/** Resolve a model per profile (used to map a profile's `role` to an available model). */
+	resolveModel?: (profile: CrewProfile) => string | undefined;
 }
 
 export interface SyncTask {

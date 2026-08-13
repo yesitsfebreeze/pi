@@ -1,6 +1,6 @@
 ---
 description: answers from data — reproducible analysis, assumptions, result limits
-model: zai/glm-5.2
+role: frontier
 exclude: edit, write
 timeout: 25
 ---

@@ -1,6 +1,6 @@
 ---
 description: explains a technical system — audience-specific docs tied to source behavior
-model: zai/glm-5.2
+role: balanced
 exclude: edit, write
 timeout: 25
 ---

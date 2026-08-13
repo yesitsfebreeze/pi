@@ -1,6 +1,6 @@
 ---
 description: chooses technical shape — bounded design, interfaces, trade-offs, migration
-model: zai/glm-5.2
+role: frontier
 thinking: medium
 timeout: 25
 ---

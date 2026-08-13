@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -60,24 +60,8 @@ function gitHead(cwd: string): string {
 	}
 }
 
-function filesChangedSince(cwd: string, since: string): number {
-	try {
-		const out = execFileSync("git", ["diff", "--name-only", `${since}..HEAD`], {
-			cwd,
-			encoding: "utf8",
-			timeout: 5000,
-		});
-		return out.trim().split("\n").filter(Boolean).length;
-	} catch {
-		return 0;
-	}
-}
-
 function globsChanged(cwd: string, globs: string[], since: string): boolean {
 	try {
-		// Fast path: if any file changed since the watermark, check globs
-		if (filesChangedSince(cwd, since) === 0) return false;
-		// Check changed files against each glob
 		const changed = execFileSync("git", ["diff", "--name-only", `${since}..HEAD`], {
 			cwd,
 			encoding: "utf8",
@@ -131,25 +115,37 @@ export interface NodeTemplate {
 
 /**
  * Generate a deterministic node manifest from the repo structure.
- * Treats each top-level dir that contains a src/ directory as a region.
+ * A top-level dir with src/ is one region; a monorepo container (e.g.
+ * packages/, crates/) contributes one region per child that has src/.
  */
 export function generateManifest(cwd: string): NodeTemplate[] {
 	const nodes: NodeTemplate[] = [];
+	const labelize = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
+	const pushRegion = (id: string, label: string, glob: string) =>
+		nodes.push({ id, label: labelize(label), globs: [glob] });
 	try {
-		const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
 		const topLevel = readdirSync(cwd);
 		for (const name of topLevel) {
 			if (name.startsWith(".") || name === "node_modules") continue;
 			const full = join(cwd, name);
 			if (!statSync(full).isDirectory()) continue;
-			if (!existsSync(join(full, "src"))) continue;
-			const id = name;
-			const label = name.charAt(0).toUpperCase() + name.slice(1);
-			nodes.push({
-				id,
-				label,
-				globs: [`${name}/`],
-			});
+			// A top-level dir that is itself a package (src/ directly beneath it).
+			if (existsSync(join(full, "src"))) {
+				pushRegion(name, name, `${name}/`);
+				continue;
+			}
+			// A package container (monorepo): each child with src/ is a region.
+			for (const child of readdirSync(full)) {
+				if (child.startsWith(".")) continue;
+				const childFull = join(full, child);
+				try {
+					if (!statSync(childFull).isDirectory()) continue;
+				} catch {
+					continue;
+				}
+				if (!existsSync(join(childFull, "src"))) continue;
+				pushRegion(`${name}/${child}`, child, `${name}/${child}/`);
+			}
 		}
 	} catch {
 		return [];
@@ -163,9 +159,7 @@ export function generateManifest(cwd: string): NodeTemplate[] {
 export function checkBudget(cwd: string): string | null {
 	const map = readMap(cwd);
 	if (map && map.nodes.length > MAX_NODES) {
-		return (
-			`map.json has ${map.nodes.length} nodes (limit: ${MAX_NODES}). ` + "Prune stale nodes or increase MAX_NODES."
-		);
+		return `map.json has ${map.nodes.length} nodes (limit: ${MAX_NODES}). Prune stale nodes or increase MAX_NODES.`;
 	}
 	try {
 		const manifest = generateManifest(cwd);
