@@ -1,6 +1,11 @@
 # Custom Models
 
-Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/models.json`.
+Add custom providers and models (vLLM, LM Studio, proxies) via `~/.pi/agent/models.json`.
+
+Ollama itself is built in and needs no `models.json` entry — pi discovers your local and Ollama Cloud
+catalogs automatically. See [Ollama](providers.md#ollama) in providers.md. The examples below still apply
+if you want to override the built-in provider (e.g. a non-default port) or add another OpenAI-compatible
+local server.
 
 ## Table of Contents
 

@@ -87,7 +87,8 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - **Kimi For Coding** (Moonshot AI subscription endpoint, uses Anthropic-compatible API)
 - **Qwen Token Plan** (separate Individual and existing catalogs, with a separate China provider)
 - **Xiaomi MiMo** (defaults to API billing endpoint, with separate Token Plan providers for `cn`/`ams`/`sgp` regions)
-- **Any OpenAI-compatible API**: Ollama, vLLM, LM Studio, etc.
+- **Ollama** (local server and Ollama Cloud; models discovered dynamically, no static catalog)
+- **Any OpenAI-compatible API**: vLLM, LM Studio, etc.
 
 ## Installation
 
@@ -447,6 +448,7 @@ Built-in providers resolve these env vars (Node.js; in browsers pass `apiKey` ex
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` |
 | GitHub Copilot | `COPILOT_GITHUB_TOKEN` |
+| Ollama | `OLLAMA_API_KEY` (Ollama Cloud only — local requests need no key; `OLLAMA_BASE_URL`/`OLLAMA_HOST` point at a non-default local server) |
 
 `qwen-token-plan-individual` and `qwen-token-plan` share the international endpoint and
 `QWEN_TOKEN_PLAN_API_KEY`. The Individual provider exposes only the models documented for Individual

@@ -8,6 +8,7 @@ Pi supports subscription-based providers via OAuth and API key providers via env
 - [API Keys](#api-keys)
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
+- [Ollama](#ollama)
 - [llama.cpp](#llamacpp)
 - [Custom Providers](#custom-providers)
 - [Resolution Order](#resolution-order)
@@ -103,6 +104,7 @@ pi
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
+| Ollama Cloud | `OLLAMA_API_KEY` | `ollama` |
 
 Reference for environment variables and `auth.json` keys: [`const envMap`](https://github.com/earendil-works/pi-mono/blob/main/packages/ai/src/env-api-keys.ts) in [`packages/ai/src/env-api-keys.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/ai/src/env-api-keys.ts).
 
@@ -127,7 +129,8 @@ Store credentials in `~/.pi/agent/auth.json`:
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
-  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
+  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." },
+  "ollama": { "type": "api_key", "key": "..." }
 }
 ```
 
@@ -295,6 +298,38 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 
 Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
 
+## Ollama
+
+Ollama is built in — no `models.json` entry required. Every model refresh (e.g. opening `/model`) queries both:
+
+- **Local server** — `OLLAMA_BASE_URL`/`OLLAMA_HOST` (default `http://localhost:11434`), listing whatever you've pulled with `ollama pull`.
+- **Ollama Cloud** — `https://ollama.com`. The hosted catalog is listed with no auth required.
+
+```bash
+# Everything below just needs `ollama serve` running — sign in once with `ollama signin`
+# and both local pulls and Ollama Cloud models work with no API key at all.
+pi --provider ollama --model local:llama3.1:8b   # a local pull
+pi --provider ollama --model gpt-oss:120b        # an Ollama Cloud model, proxied through the local server
+```
+
+**No API key needed if you're signed in locally.** When the local server answers and no cloud key is
+explicitly configured, Ollama Cloud models are dispatched *through it* rather than directly — a server
+signed in with `ollama signin` proxies any cloud model with no separate key, exactly like `ollama run
+<model>-cloud` does. `OLLAMA_API_KEY`/`/login ollama` (a portable key from
+[ollama.com/settings/keys](https://ollama.com/settings/keys), distinct from the CLI's SSH-based sign-in)
+is only needed as a fallback for direct cloud access when no local server is reachable at all — and it
+always wins if you do set one, since that's a deliberate choice to use it instead. Note that access to
+some cloud models depends on your Ollama plan/usage balance regardless of which path you use.
+
+Local model ids get a `local:` prefix (e.g. `local:llama3.1:8b`) so a local pull and a same-tagged
+Ollama Cloud model both show up in `/model` instead of colliding; Ollama Cloud ids stay bare (e.g.
+`gpt-oss:120b`). The prefix — and the cloud-proxy tag rewriting under the hood — is pi-only bookkeeping;
+neither ever reaches Ollama on the wire. Point at a non-default local install with
+`OLLAMA_BASE_URL=http://my-box:11434` (or the bare `OLLAMA_HOST=my-box:11434` form Ollama's own CLI
+uses).
+
+Models without tool-calling support are left out of the catalog, since pi's agent loop depends on tool calls. Use `modelOverrides` in `models.json` to adjust context window, cost, or compat flags for a specific Ollama model id if the auto-detected defaults are wrong for your setup.
+
 ## llama.cpp
 
 Pi supports the llama.cpp router server. Configure it with `/login llama.cpp`, manage loaded models with `/llama`, and select a loaded model with `/model`.
@@ -303,7 +338,7 @@ See [llama.cpp](llama-cpp.md) for server setup, model directory layout, environm
 
 ## Custom Providers
 
-**Via models.json:** Add Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [models.md](models.md).
+**Via models.json:** Add LM Studio, vLLM, or any other provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [models.md](models.md). Ollama itself is built in — see [Ollama](#ollama) above.
 
 **Via extensions:** For providers that need custom API implementations or OAuth flows, create an extension. See [custom-provider.md](custom-provider.md) and [examples/extensions/custom-provider-gitlab-duo](../examples/extensions/custom-provider-gitlab-duo/).
 

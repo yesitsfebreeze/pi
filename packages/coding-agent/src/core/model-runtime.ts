@@ -55,6 +55,15 @@ import {
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 
+/**
+ * Providers with no static catalog at all — their own `refreshModels` IS the model
+ * source. `withRemoteCatalog` assumes a static baseline plus an optional pi.dev
+ * overlay and replaces `refreshModels` outright, which would silently disable
+ * these providers' actual discovery (local Ollama server / Ollama Cloud, the
+ * Radius gateway catalog).
+ */
+const PURELY_DYNAMIC_PROVIDER_IDS = new Set(["radius", "ollama"]);
+
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
 	available: readonly Model<Api>[];
@@ -183,7 +192,7 @@ export class ModelRuntime implements Models {
 		const providers = builtinProviderCatalog
 			.builtinProviders()
 			.map((provider) =>
-				provider.id === "radius"
+				PURELY_DYNAMIC_PROVIDER_IDS.has(provider.id)
 					? provider
 					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
 			);

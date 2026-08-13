@@ -58,6 +58,10 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"xiaomi-token-plan-cn": "mimo-v2.5-pro",
 	"xiaomi-token-plan-ams": "mimo-v2.5-pro",
 	"xiaomi-token-plan-sgp": "mimo-v2.5-pro",
+	// The Ollama Cloud catalog is always listed regardless of whether a local server is
+	// running, so this bare (unprefixed) tag is a stable default; a local pull of the
+	// same model would show up separately as "local:gpt-oss:20b".
+	ollama: "gpt-oss:20b",
 };
 
 export interface ScopedModel {

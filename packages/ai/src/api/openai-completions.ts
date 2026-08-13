@@ -1459,6 +1459,9 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
 	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
 	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
+	// Covers both ollama.com (cloud) and the default local server port, so hand-rolled
+	// models.json entries pointing at a local Ollama server also get correct defaults.
+	const isOllama = provider === "ollama" || baseUrl.includes("ollama.com") || baseUrl.includes(":11434");
 
 	const isNonStandard =
 		isNvidia ||
@@ -1475,7 +1478,8 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		baseUrl.includes("opencode.ai") ||
 		isCloudflareWorkersAI ||
 		isCloudflareAiGateway ||
-		isAntLing;
+		isAntLing ||
+		isOllama;
 
 	const useMaxTokens =
 		baseUrl.includes("chutes.ai") ||
@@ -1485,7 +1489,8 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		isTogether ||
 		isNvidia ||
 		isAntLing ||
-		isZai;
+		isZai ||
+		isOllama;
 
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isOpenRouterDeveloperRoleModel =
@@ -1521,7 +1526,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		chatTemplateArgs: {},
 		zaiToolStream: false,
 		supportsThinkingTokenBudget: false,
-		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia,
+		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isOllama,
 		supportsOpenAIGrammarTools: false,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: false,
@@ -1532,7 +1537,8 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 			isCloudflareWorkersAI ||
 			isCloudflareAiGateway ||
 			isNvidia ||
-			isAntLing
+			isAntLing ||
+			isOllama
 		),
 	};
 }
