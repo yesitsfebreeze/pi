@@ -585,6 +585,12 @@ export function createLayersExtension(): { name: string; factory: (pi: Extension
 					deleteLayer(cwd, layer);
 					deleteMeta(cwd, layer);
 					removeWorktree(cwd, layer);
+					// The active layer must not keep pointing at a deleted ref —
+					// an implicit layer_write/layer_read would then fail mid-session.
+					if (activeLayer === layer) {
+						activeLayer = null;
+						saveActive(cwd, null);
+					}
 					return text(
 						`merged layer ${layer} onto ${r.branch} @ ${r.commit.slice(0, 8)} (checkpoint)\npurpose: ${meta.purpose}`,
 					);
@@ -613,6 +619,12 @@ export function createLayersExtension(): { name: string; factory: (pi: Extension
 					deleteLayer(cwd, layer);
 					deleteMeta(cwd, layer);
 					removeWorktree(cwd, layer);
+					// Same stale-active fix as layer_merge: the implicit-layer path
+					// must not resolve to a ref that no longer exists.
+					if (activeLayer === layer) {
+						activeLayer = null;
+						saveActive(cwd, null);
+					}
 					return text(`discarded layer ${layer}`);
 				},
 			} as ToolDefinition);
