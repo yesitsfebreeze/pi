@@ -1756,6 +1756,8 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	/** Non-fatal diagnostics (e.g. tool/flag name conflicts); precedence is resolved by load order. */
+	warnings: Array<{ path: string; error: string }>;
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
 }

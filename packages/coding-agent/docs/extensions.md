@@ -32,6 +32,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 
 - [Quick Start](#quick-start)
 - [Extension Locations](#extension-locations)
+- [Core Inline Extensions](#core-inline-extensions)
 - [Available Imports](#available-imports)
 - [Writing an Extension](#writing-an-extension)
   - [Extension Styles](#extension-styles)
@@ -135,6 +136,29 @@ Additional paths via `settings.json`:
 ```
 
 To share extensions via npm or git as pi packages, see [packages.md](packages.md).
+
+## Core Inline Extensions
+
+Not every extension comes from disk. Pi compiles 19 *inline extensions* into
+the binary — `persona`, `crew`, `layers`, `forest`, `launch`, `until`,
+`rigor`, `simplify`, `gantt`, `crawl`, `memory`, and others. The resource
+loader instantiates them on every session, before any disk-discovered
+extension:
+
+```typescript
+this.extensionFactories = options.noCoreInlineExtensions
+  ? (options.extensionFactories ?? [])
+  : [...getCoreInlineExtensions(), ...(options.extensionFactories ?? [])];
+```
+
+They use exactly the API documented on this page — same events, same
+`pi.registerTool()` / `pi.registerCommand()` / `pi.registerHealthCheck()`.
+They appear in the startup Extensions list as `<inline:name>` unless marked
+`hidden`. Because they load first, a user extension can observe or override
+what they registered.
+
+For the full list of what each one registers and how they depend on each
+other, see [core-extensions.md](core-extensions.md).
 
 ## Available Imports
 

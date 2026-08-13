@@ -108,6 +108,7 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { bandTool, deferredSnippet } from "./tools/band.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -633,11 +634,10 @@ export class AgentSession {
 
 		try {
 			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
-			const lastUserIndex =
-				this.agent.state.messages
-					.map((m, i) => ({ m, i }))
-					.filter(({ m }) => m.role === "user")
-					.pop()?.i ?? 0;
+			const lastUserIndex = Math.max(
+				0,
+				this.agent.state.messages.findLastIndex((m) => m.role === "user"),
+			);
 			const trailing = this.agent.state.messages.slice(lastUserIndex);
 
 			const result = await runCompaction(
@@ -1146,6 +1146,15 @@ export class AgentSession {
 			}
 		}
 
+		// Deferred tools ship as one line each: the schema is off the request, the
+		// capability stays reachable through `tools action=on`. Without this the
+		// band would be a wall — a tool the model cannot see is a tool it replaces
+		// with a worse improvisation.
+		const active = new Set(validToolNames);
+		const deferredTools = Array.from(this._toolDefinitions.values())
+			.filter(({ definition }) => definition.rare && !active.has(definition.name))
+			.map(({ definition }) => ({ name: definition.name, snippet: deferredSnippet(definition) }));
+
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
@@ -1163,6 +1172,7 @@ export class AgentSession {
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
+			deferredTools,
 			promptGuidelines,
 			recap: this._recapEnabled,
 		};
@@ -2578,8 +2588,16 @@ export class AgentSession {
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
-		const isAllowedTool = (name: string): boolean =>
-			(!allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
+		const isAllowedTool = (name: string): boolean => {
+			if (excludedToolNames?.has(name)) return false;
+			// The tools meta-tool is always part of the default surface, whatever else
+			// is on it: the deferred-tools prompt section advertises it whenever any
+			// tool is deferred, so omitting it (--no-builtin-tools starts with zero
+			// base tools active) would advertise a wall. An explicit allowlist or
+			// `--no-tools` (allowedToolNames = []) still wins.
+			if (name === "tools" && !allowedToolNames) return true;
+			return !allowedToolNames || allowedToolNames.has(name);
+		};
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
@@ -2601,8 +2619,13 @@ export class AgentSession {
 				]),
 		);
 		for (const tool of allCustomTools) {
+			// Uniform band policy at assembly: registerTool, registerAdditionalTool
+			// and the SDK's customTools all land here, so a tool shipped hot by one
+			// door (nvim's ~20 tools via registerAdditionalTool) would otherwise
+			// bypass the reflex economy. bandTool is idempotent — already-banded
+			// tools pass through unchanged, and rare:false/hot tools opt out.
 			definitionRegistry.set(tool.definition.name, {
-				definition: tool.definition,
+				definition: bandTool(tool.definition),
 				sourceInfo: tool.sourceInfo,
 			});
 		}
@@ -2644,11 +2667,23 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
+		// Registered is not enough — setActiveToolsByName only activates named tools,
+		// and the SDK's default surface used to stop at read/bash/edit/write. Keep the
+		// meta-tool active so the deferred-tools prompt section is never a trap.
+		if (isAllowedTool("tools") && !nextActiveToolNames.includes("tools")) {
+			nextActiveToolNames.push("tools");
+		}
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
 				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
+					// Naming a tool explicitly IS a restore. Without this the band
+					// (which marks every inline-extension tool `rare`) silently drops
+					// it again in _filterDeferredTools below, so
+					// `pi.query({ tools: [..., "gantt"] })` returned a session with no
+					// gantt — fewer tools than asked for, with no error.
+					this._restoredTools.add(toolName);
 				}
 			}
 		} else if (options?.includeAllExtensionTools) {

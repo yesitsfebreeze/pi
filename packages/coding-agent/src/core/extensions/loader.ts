@@ -30,8 +30,10 @@ import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
+import { surfaceAwareBand } from "../reflex/surface.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
+import { bandTool } from "../tools/band.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -264,8 +266,16 @@ function createExtensionAPI(
 
 		registerTool(tool: ToolDefinition): void {
 			runtime.assertActive();
+			// Cold by default (see tools/band.ts): the schema
+			// is withheld from the request, the name and a one-liner stay in the
+			// system prompt, and `tools action=on` restores it. This is the one
+			// choke point every extension goes through, so the policy lives here
+			// rather than at 40-odd registration sites — and it covers tools
+			// registered later from a lifecycle handler, not just at load.
+			// surfaceAwareBand lets the reflex ledger outrank the static policy:
+			// verdicts and fire counts override the rare stamp.
 			extension.tools.set(tool.name, {
-				definition: tool,
+				definition: surfaceAwareBand(bandTool(tool)),
 				sourceInfo: extension.sourceInfo,
 			});
 			runtime.refreshTools();
@@ -579,6 +589,7 @@ async function loadExtensionsInternal(
 	return {
 		extensions,
 		errors,
+		warnings: [],
 		runtime: resolvedRuntime,
 	};
 }

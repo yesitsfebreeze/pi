@@ -23,8 +23,51 @@ Rules:
 - Emit the block on EVERY turn. No exceptions, no skipping, no "every 10 turns".
 - Each of MISSION, TASK, NEXT is exactly one line. Keep them concise.
 - Nothing goes after the block — it is the last thing in your message.
+- The <kern> memory block (if any) goes immediately BEFORE <recap>, never after it. <recap> is always final.
 - MISSION is the stable big-picture goal; only change it when the goal changes.
 - TASK and NEXT reflect your current, in-progress focus — update them every turn.`;
+
+/** Render the loaded recipes as a short pointer to the `recipes` tool. */
+export function formatRecipesForPrompt(recipes: Array<{ name: string; content: string }>): string {
+	if (recipes.length === 0) return "";
+	const lines = [
+		"\n\nThe following executable recipes are available. Use the `recipes` tool to",
+		"search, read, or run one when a task matches.",
+		"",
+		"<available_recipes>",
+		...recipes.map((recipe) => `- ${recipe.name}`),
+		"</available_recipes>",
+	];
+	return lines.join("\n");
+}
+
+/**
+ * The other half of the tool band: a deferred tool keeps its name and one line
+ * of purpose in the prompt, and the model restores its schema on demand. Costs
+ * ~15 tokens where the schema costs hundreds, and keeps the capability
+ * reachable — deferred is not forbidden.
+ */
+export function formatDeferredTools(deferred: Array<{ name: string; snippet: string }> | undefined): string {
+	if (!deferred || deferred.length === 0) return "";
+	const lines = deferred
+		.filter((t) => t.name)
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((t) => (t.snippet ? `- ${t.name} — ${t.snippet}` : `- ${t.name}`));
+	if (lines.length === 0) return "";
+	return `
+
+## Deferred tools (registered, schema not loaded)
+
+These are NOT forbidden — only their parameter schemas are withheld to keep the
+context small. To use one, make a real tool call to \`tools\`:
+
+tools({ action: "on", names: ["<tool-name>"] })
+
+That loads the schema and makes the tool directly callable for the rest of the
+session. Prefer restoring the right tool over improvising with a worse fit.
+
+${lines.join("\n")}`;
+}
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -33,6 +76,12 @@ export interface BuildSystemPromptOptions {
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
+	/**
+	 * Tools that are registered but whose schema is withheld from the request
+	 * (see ToolDefinition.rare). Listed as one line each so the capability stays
+	 * discoverable at ~15 tokens instead of the few hundred a schema costs.
+	 */
+	deferredTools?: Array<{ name: string; snippet: string }>;
 	/** Additional guideline bullets appended to the default system prompt guidelines. */
 	promptGuidelines?: string[];
 	/** Text to append to system prompt. */
@@ -55,20 +104,24 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		customPrompt,
 		selectedTools,
 		toolSnippets,
+		deferredTools,
 		promptGuidelines,
 		appendSystemPrompt,
 		recap,
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		recipes: providedRecipes,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 	const recapSection = recap ? `${RECAP_INSTRUCTION}` : "";
+	const deferredSection = formatDeferredTools(deferredTools);
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const recipes = providedRecipes ?? [];
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -92,6 +145,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		if (customPromptHasRead && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
 		}
+
+		if (recipes.length > 0) {
+			prompt += formatRecipesForPrompt(recipes);
+		}
+
+		prompt += deferredSection;
 
 		prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
@@ -186,6 +245,12 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 	if (hasRead && skills.length > 0) {
 		prompt += formatSkillsForPrompt(skills);
 	}
+
+	if (recipes.length > 0) {
+		prompt += formatRecipesForPrompt(recipes);
+	}
+
+	prompt += deferredSection;
 
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 

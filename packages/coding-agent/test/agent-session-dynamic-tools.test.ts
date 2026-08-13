@@ -55,6 +55,9 @@ describe("AgentSession dynamic tool registration", () => {
 						}),
 						name: "bash_without_session_env",
 						label: "bash without session env",
+						// Opt out of the tool band: this test executes the tool off the
+						// active surface rather than through a restore.
+						rare: false,
 					});
 				},
 			],
@@ -159,9 +162,12 @@ describe("AgentSession dynamic tool registration", () => {
 			scope: "temporary",
 			origin: "top-level",
 		});
-		expect(session.getActiveToolNames()).toContain("dynamic_tool");
-		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
-		expect(session.systemPrompt).toContain("- Use dynamic_tool when the user asks for dynamic behavior tests.");
+		// The band defers extension tools: registered and listed for restore, but
+		// not on the active surface, so its guidelines do not ship either.
+		expect(session.getActiveToolNames()).not.toContain("dynamic_tool");
+		expect(session.getDeferredToolNames()).toContain("dynamic_tool");
+		expect(session.systemPrompt).toContain("- dynamic_tool — Run dynamic test behavior");
+		expect(session.systemPrompt).not.toContain("- Use dynamic_tool when the user asks for dynamic behavior tests.");
 
 		session.dispose();
 	});
@@ -204,7 +210,11 @@ describe("AgentSession dynamic tool registration", () => {
 			scope: "temporary",
 			origin: "top-level",
 		});
-		expect(session.getActiveToolNames()).toContain("sdk_tool");
+		// SDK custom tools land on the same band policy as every other extension
+		// door (band is applied at registry assembly): registered and reachable,
+		// deferred until `tools action=on` restores the schema.
+		expect(session.getAllTools().map((tool) => tool.name)).toContain("sdk_tool");
+		expect(session.getDeferredToolNames()).toContain("sdk_tool");
 
 		session.dispose();
 	});
@@ -248,8 +258,10 @@ describe("AgentSession dynamic tool registration", () => {
 		await session.bindExtensions({});
 
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("hidden_tool");
-		expect(session.getActiveToolNames()).toContain("hidden_tool");
-		expect(session.systemPrompt).not.toContain("hidden_tool");
+		expect(session.getActiveToolNames()).not.toContain("hidden_tool");
+		expect(session.getDeferredToolNames()).toContain("hidden_tool");
+		// Deferred tools are listed by name so the capability stays reachable, but a
+		// tool that provides no promptSnippet still keeps its description out.
 		expect(session.systemPrompt).not.toContain("Description should not appear in available tools");
 
 		session.dispose();

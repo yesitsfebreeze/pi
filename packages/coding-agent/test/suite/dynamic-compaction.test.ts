@@ -16,7 +16,7 @@ function msg(role: string, text: string): AgentMessage {
 function toolCall(name: string): AgentMessage {
 	return {
 		role: "assistant",
-		content: [{ type: "toolCall", toolName: name, toolCallId: "1", args: {} }],
+		content: [{ type: "toolCall", name, id: "1", arguments: {} }],
 		timestamp: Date.now(),
 	} as AgentMessage;
 }
@@ -75,9 +75,9 @@ describe("dynamic compaction", () => {
 		// assistant "I read the file" stays (has non-tool content).
 		expect(result).toHaveLength(4);
 		expect(result[0].role).toBe("user");
-		expect(result[0].content[0]).toEqual({ type: "text", text: "do x" });
+		expect((result[0] as any).content[0]).toEqual({ type: "text", text: "do x" });
 		expect(result[1].role).toBe("assistant");
-		expect(result[1].content[0]).toEqual({ type: "text", text: "I read the file" });
+		expect((result[1] as any).content[0]).toEqual({ type: "text", text: "I read the file" });
 		expect(result[2]).toEqual(messages[4]);
 		expect(result[3]).toEqual(messages[5]);
 	});
@@ -94,9 +94,9 @@ describe("dynamic compaction", () => {
 		// Index 1 is the assistant "first line\nsecond line\nthird" — condensed to first line.
 		expect(result).toHaveLength(4);
 		expect(result[0].role).toBe("user");
-		expect(result[0].content[0]).toEqual({ type: "text", text: "do x" });
+		expect((result[0] as any).content[0]).toEqual({ type: "text", text: "do x" });
 		expect(result[1].role).toBe("assistant");
-		expect(result[1].content[0]).toEqual({ type: "text", text: "first line" });
+		expect((result[1] as any).content[0]).toEqual({ type: "text", text: "first line" });
 		expect(result[2]).toEqual(messages[2]);
 		expect(result[3]).toEqual(messages[3]);
 	});
@@ -119,7 +119,7 @@ describe("dynamic compaction", () => {
 		expect(result).toHaveLength(4);
 		expect(result[0].role).toBe("user");
 		expect(result[1].role).toBe("assistant");
-		expect(result[1].content[0]).toEqual({ type: "text", text: "I used read and grep" });
+		expect((result[1] as any).content[0]).toEqual({ type: "text", text: "I used read and grep" });
 		expect(result[2]).toEqual(messages[5]);
 		expect(result[3]).toEqual(messages[6]);
 	});

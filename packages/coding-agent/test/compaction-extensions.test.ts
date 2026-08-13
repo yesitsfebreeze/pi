@@ -82,6 +82,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			healthChecks: new Map(),
 		};
 	}
 
@@ -106,7 +107,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		const runtime = createExtensionRuntime();
 		const resourceLoader = {
 			...createTestResourceLoader(),
-			getExtensions: () => ({ extensions, errors: [], runtime }),
+			getExtensions: () => ({ extensions, errors: [], warnings: [], runtime }),
 		};
 
 		session = new AgentSession({
@@ -258,6 +259,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			healthChecks: new Map(),
 		};
 
 		await createSession([throwingExtension]);
@@ -307,6 +309,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			healthChecks: new Map(),
 		};
 
 		const extension2: Extension = {
@@ -338,6 +341,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			healthChecks: new Map(),
 		};
 
 		await createSession([extension1, extension2]);

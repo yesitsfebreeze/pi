@@ -42,8 +42,8 @@ describe("running compaction", () => {
 		expect(result).not.toBeNull();
 		// Everything before the last user message
 		expect(result).toHaveLength(4);
-		expect(result![0].content[0]).toEqual({ type: "text", text: "turn1" });
-		expect(result![3].content[0]).toEqual({ type: "text", text: "resp2" });
+		expect((result![0] as any).content[0]).toEqual({ type: "text", text: "turn1" });
+		expect((result![3] as any).content[0]).toEqual({ type: "text", text: "resp2" });
 	});
 
 	it("shouldCompact handles single user message gracefully", () => {
@@ -60,9 +60,9 @@ describe("running compaction", () => {
 		const result = buildCompactMessages("summary text", trailing);
 		expect(result).toHaveLength(3);
 		expect(result[0].role).toBe("user");
-		expect(result[0].content[0].type).toBe("text");
-		expect((result[0].content[0] as { text: string }).text).toContain("summary text");
-		expect((result[0].content[0] as { text: string }).text).toContain("<context-summary>");
+		expect((result[0] as any).content[0].type).toBe("text");
+		expect(((result[0] as any).content[0] as { text: string }).text).toContain("summary text");
+		expect(((result[0] as any).content[0] as { text: string }).text).toContain("<context-summary>");
 		expect(result[1]).toEqual(trailing[0]);
 		expect(result[2]).toEqual(trailing[1]);
 	});
@@ -81,7 +81,7 @@ describe("running compaction", () => {
 		state.turnsSinceLastSummary = 2;
 		const result = shouldCompact(messages, state);
 		expect(result).not.toBeNull();
-		expect(result![0].content[0]).toEqual({ type: "text", text: "turn1" });
-		expect(result![1].content[0]).toEqual({ type: "text", text: "resp1" });
+		expect((result![0] as any).content[0]).toEqual({ type: "text", text: "turn1" });
+		expect((result![1] as any).content[0]).toEqual({ type: "text", text: "resp1" });
 	});
 });

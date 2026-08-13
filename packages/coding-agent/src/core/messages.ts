@@ -145,6 +145,37 @@ export function createCustomMessage(
  * - Compaction's generateSummary (for summarization)
  * - Custom extensions and tools
  */
+/**
+ * `<recap>` blocks are a TUI overlay feed, not conversation. The system prompt
+ * asks for one on EVERY assistant message, and the block was stripped for
+ * display only — so every past recap was still shipped back to the model on
+ * every later turn, growing the request forever with three lines of state that
+ * only the newest copy of is true.
+ *
+ * Stripping them here (the one place messages become an LLM request) keeps the
+ * full trace in the session file and the overlay, and off the wire. Only text
+ * blocks are touched: thinking blocks carry provider signatures and tool calls
+ * carry their pairing.
+ */
+const RECAP_BLOCK = /<recap>[\s\S]*?<\/recap>\s*/g;
+
+function stripRecapBlocks(message: AgentMessage & { role: "assistant" }): AgentMessage {
+	if (!Array.isArray(message.content)) return message;
+	let changed = false;
+	const content = message.content
+		.map((block) => {
+			if (block.type !== "text" || !block.text.includes("<recap>")) return block;
+			const text = block.text.replace(RECAP_BLOCK, "").trimEnd();
+			changed = true;
+			return { ...block, text };
+		})
+		.filter((block) => block.type !== "text" || block.text.length > 0);
+	if (!changed) return message;
+	// A turn whose only output was a recap must not become an empty message.
+	if (content.length === 0) return { ...message, content: [{ type: "text", text: "(no output)" }] };
+	return { ...message, content };
+}
+
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	return messages
 		.map((m): Message | undefined => {
@@ -181,8 +212,9 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						],
 						timestamp: m.timestamp,
 					};
-				case "user":
 				case "assistant":
+					return stripRecapBlocks(m) as Message;
+				case "user":
 				case "toolResult":
 					return m;
 				default:

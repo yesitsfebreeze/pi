@@ -33,6 +33,9 @@ describe("lax message content handling", () => {
 					name: "web_search",
 					label: "Web Search",
 					description: "Custom tool that returns a result without content",
+					// rare: false opts out of the tool band — this test calls the tool
+					// through a real turn, so its schema has to be on the surface.
+					rare: false,
 					parameters: Type.Object({}),
 					// Simulate an untyped JS extension tool that omits content.
 					execute: async () => ({ details: {} }) as unknown as AgentToolResult<unknown>,

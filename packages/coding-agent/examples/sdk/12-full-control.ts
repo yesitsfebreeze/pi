@@ -34,7 +34,7 @@ const settingsManager = SettingsManager.inMemory({
 const cwd = process.cwd();
 
 const resourceLoader: ResourceLoader = {
-	getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+	getExtensions: () => ({ extensions: [], errors: [], warnings: [], runtime: createExtensionRuntime() }),
 	getSkills: () => ({ skills: [], diagnostics: [] }),
 	getPrompts: () => ({ prompts: [], diagnostics: [] }),
 	getThemes: () => ({ themes: [], diagnostics: [] }),

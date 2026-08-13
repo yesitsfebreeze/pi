@@ -46,7 +46,7 @@ export function slimToolTraffic(messages: AgentMessage[], trailingWindow: number
 			// Strip tool traffic from old turns
 			if (msg.role === "assistant") {
 				const toolCalls = msg.content.filter((c) => c.type === "toolCall");
-				const nonToolContent = msg.content.filter((c) => c.type !== "toolCall" && c.type !== "toolUse");
+				const nonToolContent = msg.content.filter((c) => c.type !== "toolCall");
 
 				if (nonToolContent.length > 0 || toolCalls.length === 0) {
 					// Keep text content, drop tool calls
@@ -54,7 +54,7 @@ export function slimToolTraffic(messages: AgentMessage[], trailingWindow: number
 				} else {
 					// All content was tool calls — make a stub
 					const names = toolCalls
-						.map((c) => (c.type === "toolCall" ? c.toolName : undefined))
+						.map((c) => (c.type === "toolCall" ? c.name : undefined))
 						.filter(Boolean)
 						.join(", ");
 					result.push({

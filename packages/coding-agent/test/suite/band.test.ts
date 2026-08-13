@@ -1,11 +1,12 @@
 /**
  * Tool band tests — verify deferred (rare) tool loading works correctly.
  *
- * These tests verify the tool definition contract and the filter logic
- * without going through the pre-existing harness breakage.
+ * Covers the tool definition contract and the real deferral behaviour of a
+ * live AgentSession.
  */
 import { describe, expect, it } from "vitest";
 import { createAllToolDefinitions } from "../../src/core/tools/index.ts";
+import { createHarness } from "./harness.ts";
 
 describe("tool band (deferred loading)", () => {
 	it("ls tool definition has rare: true", () => {
@@ -23,60 +24,44 @@ describe("tool band (deferred loading)", () => {
 		expect(defs.find.rare).toBeUndefined();
 	});
 
-	it("filter removes rare tools that have not been restored", () => {
-		// Simulate what _filterDeferredTools does
-		const definitions = new Map([
-			["ls", { definition: { name: "ls", rare: true as const } }],
-			["read", { definition: { name: "read" } }],
-			["bash", { definition: { name: "bash" } }],
-		]);
-		const restored = new Set<string>();
+	// These three used to define a local copy of _filterDeferredTools and assert
+	// on the copy — deleting the real filter from agent-session.ts left them
+	// green. They now drive a real session.
 
-		const filter = (names: string[]): string[] =>
-			names.filter((name) => {
-				const entry = definitions.get(name);
-				if (!entry?.definition.rare) return true;
-				return restored.has(name);
-			});
-
-		const active = ["read", "bash", "ls"];
-
-		// ls is rare and not restored — should be filtered out
-		expect(filter(active)).toEqual(["read", "bash"]);
+	it("does not activate a rare tool by default, but keeps it reachable", async () => {
+		const harness = await createHarness({});
+		try {
+			await harness.session.bindExtensions({});
+			expect(harness.session.getAllTools().map((t) => t.name)).toContain("ls");
+			expect(harness.session.getActiveToolNames()).not.toContain("ls");
+			expect(harness.session.getDeferredToolNames()).toContain("ls");
+		} finally {
+			harness.cleanup();
+		}
 	});
 
-	it("filter keeps rare tools that have been manually restored", () => {
-		const definitions = new Map([
-			["ls", { definition: { name: "ls", rare: true as const } }],
-			["read", { definition: { name: "read" } }],
-		]);
-		const restored = new Set(["ls"]);
-
-		const filter = (names: string[]): string[] =>
-			names.filter((name) => {
-				const entry = definitions.get(name);
-				if (!entry?.definition.rare) return true;
-				return restored.has(name);
-			});
-
-		expect(filter(["read", "ls"])).toEqual(["read", "ls"]);
+	it("activates a rare tool once it is restored", async () => {
+		const harness = await createHarness({});
+		try {
+			await harness.session.bindExtensions({});
+			harness.session.restoreTools(["ls"]);
+			expect(harness.session.getActiveToolNames()).toContain("ls");
+			expect(harness.session.getDeferredToolNames()).not.toContain("ls");
+		} finally {
+			harness.cleanup();
+		}
 	});
 
-	it("filter keeps non-rare tools regardless of restored set", () => {
-		const definitions = new Map([
-			["read", { definition: { name: "read" } }],
-			["bash", { definition: { name: "bash" } }],
-		]);
-		const restored = new Set<string>();
-
-		const filter = (names: string[]): string[] =>
-			names.filter((name) => {
-				const entry = definitions.get(name);
-				if (!entry?.definition.rare) return true;
-				return restored.has(name);
-			});
-
-		expect(filter(["read", "bash"])).toEqual(["read", "bash"]);
+	it("keeps non-rare tools active without any restore", async () => {
+		const harness = await createHarness({});
+		try {
+			await harness.session.bindExtensions({});
+			const active = harness.session.getActiveToolNames();
+			for (const name of ["read", "bash", "edit", "write"]) expect(active).toContain(name);
+			expect(harness.session.getDeferredToolNames()).not.toContain("read");
+		} finally {
+			harness.cleanup();
+		}
 	});
 
 	it("all seven built-in tool names are present", () => {

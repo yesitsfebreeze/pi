@@ -8,6 +8,7 @@ import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { createDoctorProbeToolDefinition } from "./doctor.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import { slimToolTraffic } from "./history-slim.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
@@ -27,7 +28,6 @@ import {
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
-	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
 
@@ -64,7 +64,8 @@ export interface CreateAgentSessionOptions {
 	 * Optional allowlist of tool names.
 	 *
 	 * When omitted, pi enables the default built-in tools (read, bash, edit, write)
-	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
+	 * plus the `tools` meta-tool, and leaves extension/custom tools enabled unless
+	 * `noTools` changes that default.
 	 * When provided, only the listed tool names are enabled.
 	 */
 	tools?: string[];
@@ -243,7 +244,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+	// `tools` is the meta-tool the deferred-tools prompt section points at
+	// ("make a real tool call to `tools`"), so it is part of the default surface
+	// like read/bash/edit/write. agent-session's own default already includes it;
+	// this must match or every SDK-created session advertises a `tools` tool it
+	// does not have active — "Tool tools not found" on the first restore attempt.
+	const defaultActiveToolNames: string[] = ["read", "bash", "edit", "write", "tools"];
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
@@ -253,9 +259,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	let agent: Agent;
 
-	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
+	// Create convertToLlm wrapper that strips old tool traffic then filters
+	// images if blockImages is enabled (defense-in-depth). history-slim is a
+	// complementary, always-off-by-default token saver: it drops tool calls
+	// and results from turns older than a trailing window, keeping text. The
+	// session file keeps the full trace — only the model-bound copy is slimmed.
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		const window = settingsManager.getHistorySlimWindow();
+		const slimmed = window > 0 ? slimToolTraffic(messages, window) : messages;
+		const converted = convertToLlm(slimmed);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			return converted;

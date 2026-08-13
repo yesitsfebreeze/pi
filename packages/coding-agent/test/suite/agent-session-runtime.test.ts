@@ -173,6 +173,8 @@ describe("AgentSessionRuntime characterization", () => {
 				name: "block",
 				label: "Block",
 				description: "Blocks until aborted",
+				// Opt out of the tool band: the faux response calls this tool.
+				rare: false,
 				parameters: Type.Object({}),
 				execute: (_toolCallId, _params, signal) =>
 					new Promise<AgentToolResult<unknown>>((resolve) => {
