@@ -1,1 +1,5 @@
 *.bun-build
+.pi/git/
+.pi/npm/git/
+.pi/npm/
+.pi/
