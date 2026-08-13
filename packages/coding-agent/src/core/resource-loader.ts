@@ -21,6 +21,7 @@ import { findGitPaths } from "./footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
+import { loadRecipes, setRecipesRoot } from "./recipes/store.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
@@ -167,7 +168,7 @@ export interface DefaultResourceLoaderOptions {
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
 	extensionFactories?: InlineExtension[];
-	/** Omit the always-on core inline extensions (file-awareness, persona, rigor, forest, launch, until, issue-reporter, crew). Tests of the loader mechanics set this to assert exact inline-factory counts. */
+	/** Omit the always-on core inline extensions (see getCoreInlineExtensions). Tests of the loader mechanics set this to assert exact inline-factory counts. */
 	noCoreInlineExtensions?: boolean;
 	noExtensions?: boolean;
 	noSkills?: boolean;
@@ -269,10 +270,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];
-		// Core inline extensions (file-awareness, persona, rigor, forest, launch,
-		// until, issue-reporter, crew) are always loaded — they are pi features,
-		// not user extensions. User-provided factories are appended so they load
-		// alongside and can still override tool/command names by load order.
+		// Core inline extensions (see getCoreInlineExtensions) are always loaded
+		// — they are pi features, not user extensions. User-provided factories
+		// are appended so they load alongside and can still override tool/command
+		// names by load order.
 		this.extensionFactories = options.noCoreInlineExtensions
 			? [...(options.extensionFactories ?? [])]
 			: [...getCoreInlineExtensions(), ...(options.extensionFactories ?? [])];
@@ -333,7 +334,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	getRecipes(): { recipes: Array<{ name: string; content: string }>; diagnostics: ResourceDiagnostic[] } {
-		return { recipes: [], diagnostics: [] };
+		setRecipesRoot(this.cwd);
+		const recipes = loadRecipes().map((recipe) => ({ name: recipe.name, content: recipe.prose }));
+		return { recipes, diagnostics: [] };
 	}
 
 	getSystemPrompt(): string | undefined {
@@ -633,6 +636,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const extensionsResult: LoadExtensionsResult = {
 			extensions: orderedExtensions,
 			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+			warnings: [...preTrustExtensions.warnings, ...remainingExtensions.warnings],
 			runtime: preTrustExtensions.runtime,
 		};
 		this.addExtensionConflictDiagnostics(extensionsResult);
@@ -640,11 +644,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private addExtensionConflictDiagnostics(extensionsResult: LoadExtensionsResult): void {
-		// Detect extension conflicts (tools, commands, flags with same names from different extensions)
-		// Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
+		// Detect extension conflicts (tools, commands, flags with same names from different extensions).
+		// Keep all extensions loaded. Conflicts are non-fatal warnings: precedence is handled by load order.
 		const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
 		for (const conflict of conflicts) {
-			extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
+			extensionsResult.warnings.push({ path: conflict.path, error: conflict.message });
 		}
 	}
 

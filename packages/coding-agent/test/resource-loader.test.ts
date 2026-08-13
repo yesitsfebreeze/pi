@@ -883,8 +883,8 @@ export default function(pi: ExtensionAPI) {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
-			const { errors } = loader.getExtensions();
-			expect(errors.some((e) => e.error.includes("duplicate-tool") && e.error.includes("conflicts"))).toBe(true);
+			const { warnings } = loader.getExtensions();
+			expect(warnings.some((w) => w.error.includes("duplicate-tool") && w.error.includes("conflicts"))).toBe(true);
 		});
 
 		it("should prefer explicit CLI extensions over discovered extensions when commands and tools conflict", async () => {
