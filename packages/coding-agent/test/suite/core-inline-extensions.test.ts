@@ -1,14 +1,15 @@
 /**
- * Wiring integration — verifies the core inline extensions (file-awareness,
- * persona, rigor, forest, launch, until, issue-reporter, crew, nvim-surface)
- * are loaded by the DefaultResourceLoader and register their tools/commands.
- * This is the single chokepoint that makes the ported features live in every
- * session.
+ * Wiring integration — verifies every core inline extension is loaded by the
+ * DefaultResourceLoader and registers its tools/commands. This is the single
+ * chokepoint that makes the ported features live in every session. The
+ * authoritative list lives in the test body, where its length is asserted
+ * against getCoreInlineExtensions() so the two cannot drift.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getCoreInlineExtensions } from "../../src/core/core-inline-extensions.ts";
 import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
 
@@ -40,23 +41,45 @@ async function loader(): Promise<DefaultResourceLoader> {
 }
 
 describe("core inline extensions wiring", () => {
-	it("loads all nine core inline extensions", async () => {
+	it("loads every core inline extension", async () => {
 		const l = await loader();
 		const names = new Set(l.getExtensions().extensions.map((e) => e.path));
-		// Inline extensions show up as <inline:name>
-		for (const n of [
+		// Inline extensions show up as <inline:name>. This list is exhaustive and
+		// the count is asserted below: a presence-only check let `search-guard`
+		// and `pi-backup` ship uncovered, and would not catch one silently
+		// dropped from getCoreInlineExtensions().
+		const expectedInline = [
 			"file-awareness",
 			"persona",
+			"vitals",
+			"model-ledger",
+			"search-guard",
 			"rigor",
+			"simplify",
+			"reflex",
+			"slim",
 			"forest",
+			"layers",
 			"launch",
 			"until",
 			"issue-reporter",
+			"memory",
 			"crew",
+			"pi-backup",
+			"init",
+			"gantt",
+			"crawl",
+			"recipes",
+			"mem",
+			"interact",
 			"nvim-surface",
-		]) {
+		];
+		for (const n of expectedInline) {
 			expect(names.has(`<inline:${n}>`), `missing inline extension ${n}`).toBe(true);
 		}
+		expect(getCoreInlineExtensions().length, "getCoreInlineExtensions() drifted from the expected list").toBe(
+			expectedInline.length,
+		);
 	});
 
 	it("registers every core tool", async () => {
@@ -65,7 +88,53 @@ describe("core inline extensions wiring", () => {
 		for (const ext of l.getExtensions().extensions) {
 			for (const name of ext.tools.keys()) toolNames.add(name);
 		}
-		for (const t of ["rigor", "forest_dispatch", "forest_cleanup", "launch", "until", "record_stall", "crew"]) {
+		for (const t of [
+			"rigor",
+			"forest_dispatch",
+			"forest_cleanup",
+			"layer_new",
+			"layer_write",
+			"layer_edit",
+			"layer_read",
+			"layer_rm",
+			"layer_diff",
+			"layer_log",
+			"layer_list",
+			"layer_test",
+			"layer_merge",
+			"layer_discard",
+			"launch",
+			"until",
+			"record_stall",
+			"crew",
+			"gantt",
+			"crawl",
+			"crawl_score",
+			"crawl_rescore",
+			"crawl_export",
+			"crawl_research",
+			"crawl_list",
+			"crawl_topics",
+			"crawl_status",
+			"simplify",
+			"reflex",
+			"kern_ingest",
+			"kern_query",
+			"kern_link",
+			"kern_forget",
+			"kern_health",
+			"mem_maps",
+			"mem_read",
+			"mem_write",
+			"mem_search",
+			"mem_attach",
+			"mem_registers",
+			"mem_detach",
+			"mem_run",
+			"mem_children",
+			"mem_valgrind_run",
+			"mem_valgrind_status",
+		]) {
 			expect(toolNames.has(t), `missing tool ${t}`).toBe(true);
 		}
 	});
@@ -76,7 +145,22 @@ describe("core inline extensions wiring", () => {
 		for (const ext of l.getExtensions().extensions) {
 			for (const name of ext.commands.keys()) cmds.add(name);
 		}
-		for (const c of ["launch", "until", "pace", "issue", "persona", "rigor", "crew"]) {
+		for (const c of [
+			"launch",
+			"until",
+			"pace",
+			"issue",
+			"persona",
+			"rigor",
+			"crew",
+			"init",
+			"gantt",
+			"simplify",
+			"layers",
+			"ontology",
+			"discover",
+			"model-ledger",
+		]) {
 			expect(cmds.has(c), `missing command /${c}`).toBe(true);
 		}
 	});

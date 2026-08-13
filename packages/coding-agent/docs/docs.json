@@ -53,6 +53,10 @@
           "path": "extensions.md"
         },
         {
+          "title": "Core Inline Extensions",
+          "path": "core-extensions.md"
+        },
+        {
           "title": "Skills",
           "path": "skills.md"
         },
