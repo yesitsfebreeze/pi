@@ -1,10 +1,4 @@
-/**
- * Rigor — scan discovery, plan generation, mistake recording. We exercise the
- * pure discovery/plan functions against a fixture repo; we do NOT spawn the
- * actual checks (those shell out to package scripts).
- */
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,13 +6,14 @@ import { afterEach, describe, expect, it } from "vitest";
 // Rigor uses module-level state keyed by `root`. We import the factory and
 // invoke it against an ExtensionAPI stub that captures registerTool calls and
 // forwards session_start to set the root + status setter.
-function makeApi(cwd: string) {
+function makeApi(_cwd: string) {
 	let setStatus: ((key: string, text: string | undefined) => void) | undefined;
-	const tools: { name: string; execute: Function }[] = [];
-	const handlers: Record<string, Function[]> = {};
+	const tools: { name: string; execute: (...args: any[]) => any }[] = [];
+	const handlers: Record<string, Array<(...args: any[]) => any>> = {};
 	const api: any = {
-		on(event: string, h: Function) {
-			(handlers[event] ??= []).push(h);
+		on(event: string, h: (...args: any[]) => any) {
+			handlers[event] ??= [];
+			handlers[event].push(h);
 		},
 		registerTool(t: any) {
 			tools.push(t);
@@ -37,7 +32,9 @@ function makeApi(cwd: string) {
 		api,
 		tools,
 		fire,
-		setStatusSetter: (fn: typeof setStatus) => (setStatus = fn),
+		setStatusSetter: (fn: typeof setStatus) => {
+			setStatus = fn;
+		},
 	};
 }
 
@@ -119,7 +116,7 @@ describe("rigor", () => {
 			const res = await rigorTool.execute("1", { action: "status" });
 			const text = res.content[0].text;
 			expect(text).toContain("checks:");
-			expect(text).toMatch(/auto fast check: on/);
+			expect(text).toMatch(/auto fast check: off/);
 		});
 	});
 

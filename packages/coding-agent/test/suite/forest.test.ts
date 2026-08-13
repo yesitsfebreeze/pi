@@ -3,18 +3,19 @@
  * Uses a real git repo fixture so `git worktree` operations are exercised.
  */
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createForestExtension } from "../../src/core/forest/index.ts";
 
 function makeApi() {
-	const tools: { name: string; execute: Function }[] = {};
-	const handlers: Record<string, Function[]> = {};
+	const tools: Record<string, { name: string; execute: (...args: any[]) => any }> = {};
+	const handlers: Record<string, Array<(...args: any[]) => any>> = {};
 	const api: any = {
-		on(event: string, h: Function) {
-			(handlers[event] ??= []).push(h);
+		on(event: string, h: (...args: any[]) => any) {
+			handlers[event] ??= [];
+			handlers[event].push(h);
 		},
 		registerTool(t: any) {
 			tools[t.name] = t;

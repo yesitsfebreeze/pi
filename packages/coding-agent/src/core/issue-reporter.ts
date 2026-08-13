@@ -1,5 +1,7 @@
 // issue-reporter — structured GitHub issue reporting.
-// Wired directly into AgentSession; no extension layer.
+// Loaded as the hidden `issue-reporter` core inline extension (see
+// core-inline-extensions.ts), which owns the `record_stall` tool, the /issue
+// command, and auto-reporting of errors from non-builtin tools.
 
 import { execFile } from "node:child_process";
 import { statSync } from "node:fs";

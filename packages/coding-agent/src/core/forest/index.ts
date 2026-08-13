@@ -6,7 +6,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "../../core/extensions/types.ts";
 
@@ -112,16 +112,16 @@ function sweepOrphans(cwd: string): number {
 	const realCwd = real(cwd);
 	let removed = 0;
 	const lines = list.split("\n");
-	let wt = "";
+	let tree = "";
 	for (const ln of lines) {
-		if (ln.startsWith("worktree ")) wt = real(ln.slice(9).trim());
+		if (ln.startsWith("worktree ")) tree = real(ln.slice(9).trim());
 		else if (ln === "") {
-			if (!wt || wt === realCwd) {
-				wt = "";
+			if (!tree || tree === realCwd) {
+				tree = "";
 				continue;
 			}
-			if (wt !== root && !wt.startsWith(`${root}/`)) {
-				wt = "";
+			if (tree !== root && !tree.startsWith(`${root}/`)) {
+				tree = "";
 				continue;
 			}
 
@@ -129,7 +129,7 @@ function sweepOrphans(cwd: string): number {
 			let merged = false;
 			try {
 				const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-					cwd: wt,
+					cwd: tree,
 					encoding: "utf8",
 					stdio: ["pipe", "pipe", "pipe"],
 				}).trim();
@@ -137,7 +137,7 @@ function sweepOrphans(cwd: string): number {
 					let target = "main";
 					try {
 						const up = execSync(`git rev-parse --abbrev-ref ${branch}@{upstream}`, {
-							cwd: wt,
+							cwd: tree,
 							encoding: "utf8",
 							stdio: ["pipe", "pipe", "pipe"],
 						}).trim();
@@ -146,12 +146,12 @@ function sweepOrphans(cwd: string): number {
 						/* no upstream */
 					}
 					const mb = execSync(`git merge-base ${branch} ${target}`, {
-						cwd: wt,
+						cwd: tree,
 						encoding: "utf8",
 						stdio: ["pipe", "pipe", "pipe"],
 					}).trim();
 					const head = execSync(`git rev-parse ${branch}`, {
-						cwd: wt,
+						cwd: tree,
 						encoding: "utf8",
 						stdio: ["pipe", "pipe", "pipe"],
 					}).trim();
@@ -163,19 +163,19 @@ function sweepOrphans(cwd: string): number {
 
 			if (merged) {
 				try {
-					execSync(`git worktree remove --force ${wt}`, { cwd, stdio: "ignore" });
+					execSync(`git worktree remove --force ${tree}`, { cwd, stdio: "ignore" });
 					removed++;
 				} catch {
 					/* ok */
 				}
-				wt = "";
+				tree = "";
 				continue;
 			}
 
 			// Stale: clean, no commits ahead, untouched >1h
 			let stale = false;
 			try {
-				stale = Date.now() - statSync(wt).mtimeMs > 60 * 60 * 1000;
+				stale = Date.now() - statSync(tree).mtimeMs > 60 * 60 * 1000;
 			} catch {
 				stale = true;
 			}
@@ -184,7 +184,7 @@ function sweepOrphans(cwd: string): number {
 				try {
 					dirty =
 						execSync("git status --porcelain", {
-							cwd: wt,
+							cwd: tree,
 							encoding: "utf8",
 							stdio: ["pipe", "pipe", "pipe"],
 						}).trim().length > 0;
@@ -197,7 +197,7 @@ function sweepOrphans(cwd: string): number {
 						ahead =
 							parseInt(
 								execSync("git rev-list --count main..HEAD", {
-									cwd: wt,
+									cwd: tree,
 									encoding: "utf8",
 									stdio: ["pipe", "pipe", "pipe"],
 								}).trim(),
@@ -208,7 +208,7 @@ function sweepOrphans(cwd: string): number {
 					}
 					if (ahead === 0) {
 						try {
-							execSync(`git worktree remove --force ${wt}`, { cwd, stdio: "ignore" });
+							execSync(`git worktree remove --force ${tree}`, { cwd, stdio: "ignore" });
 							removed++;
 						} catch {
 							/* ok */
@@ -216,7 +216,7 @@ function sweepOrphans(cwd: string): number {
 					}
 				}
 			}
-			wt = "";
+			tree = "";
 		}
 	}
 	return removed;
@@ -291,6 +291,7 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 			pi.registerTool({
 				name: "forest_dispatch",
 				label: "Forest: Dispatch",
+				promptSnippet: "Create an isolated git worktree under .pi/trees/ for parallel work",
 				description:
 					"Create an isolated git worktree under .pi/trees/. Returns path. Write-scope is pre-configured.",
 				parameters: Type.Object({
@@ -338,6 +339,7 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 			pi.registerTool({
 				name: "forest_cleanup",
 				label: "Forest: Cleanup",
+				promptSnippet: "Prune, list, or remove worktrees created by forest_dispatch",
 				description:
 					"Clean up worktrees under .pi/trees/: prune, list, or remove. Auto-detects merged branches. Never touches outside .pi/trees/.",
 				parameters: Type.Object({
@@ -378,20 +380,20 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 
 						const targets: string[] = [];
 						const lines = list.split("\n");
-						let wt = "";
+						let tree = "";
 						for (const ln of lines) {
-							if (ln.startsWith("worktree ")) wt = real(ln.slice(9).trim());
+							if (ln.startsWith("worktree ")) tree = real(ln.slice(9).trim());
 							else if (ln === "") {
-								if (!wt || wt === real(cwd)) {
-									wt = "";
+								if (!tree || tree === real(cwd)) {
+									tree = "";
 									continue;
 								}
-								if (wt !== root && !wt.startsWith(`${root}/`)) {
-									wt = "";
+								if (tree !== root && !tree.startsWith(`${root}/`)) {
+									tree = "";
 									continue;
 								}
-								if (requested ? wt === requested : true) targets.push(wt);
-								wt = "";
+								if (requested ? tree === requested : true) targets.push(tree);
+								tree = "";
 							}
 						}
 
@@ -416,17 +418,17 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 					const plist = git(cwd, ["worktree", "list", "--porcelain"]);
 					if (plist) {
 						const lines = plist.split("\n");
-						let wt = "";
+						let tree = "";
 						for (const ln of lines) {
-							if (ln.startsWith("worktree ")) wt = real(ln.slice(9).trim());
+							if (ln.startsWith("worktree ")) tree = real(ln.slice(9).trim());
 							else if (ln === "") {
-								if (wt !== root && !wt.startsWith(`${root}/`)) {
-									wt = "";
+								if (tree !== root && !tree.startsWith(`${root}/`)) {
+									tree = "";
 									continue;
 								}
 								try {
 									const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-										cwd: wt,
+										cwd: tree,
 										encoding: "utf8",
 										stdio: ["pipe", "pipe", "pipe"],
 									}).trim();
@@ -434,7 +436,7 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 										let target = "main";
 										try {
 											const up = execSync(`git rev-parse --abbrev-ref ${branch}@{upstream}`, {
-												cwd: wt,
+												cwd: tree,
 												encoding: "utf8",
 												stdio: ["pipe", "pipe", "pipe"],
 											}).trim();
@@ -443,21 +445,21 @@ export function createForestExtension(): { name: string; factory: (pi: Extension
 											/* no upstream */
 										}
 										const mb = execSync(`git merge-base ${branch} ${target}`, {
-											cwd: wt,
+											cwd: tree,
 											encoding: "utf8",
 											stdio: ["pipe", "pipe", "pipe"],
 										}).trim();
 										const head = execSync(`git rev-parse ${branch}`, {
-											cwd: wt,
+											cwd: tree,
 											encoding: "utf8",
 											stdio: ["pipe", "pipe", "pipe"],
 										}).trim();
-										if (mb === head) mergedOut.push(`  ${wt} [merged — safe to remove]`);
+										if (mb === head) mergedOut.push(`  ${tree} [merged — safe to remove]`);
 									}
 								} catch {
 									/* skip */
 								}
-								wt = "";
+								tree = "";
 							}
 						}
 					}

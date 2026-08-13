@@ -1,5 +1,7 @@
 // until — loop surface: goal mode + schedule mode + pace loops.
-// Wired directly into AgentSession; no extension layer.
+// Loaded as the `until` core inline extension (see core-inline-extensions.ts),
+// which owns the lifecycle wiring, the `until` tool, and the /until and /pace
+// commands.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

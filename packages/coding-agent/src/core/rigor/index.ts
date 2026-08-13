@@ -25,6 +25,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
+import { createVolatileChannel } from "../context-injection.ts";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
 
 const STATUS_KEY = "rigor";
@@ -62,7 +63,9 @@ interface Run {
 }
 
 let root = process.cwd();
-let auto = true;
+// Auto post-edit check is off by default: rigor is manual — activate with
+// `/rigor auto on` (persisted) or run `/rigor full|integration|fast` once.
+let auto = false;
 let running = false;
 let touched = new Set<string>();
 let lastFailSig = "";
@@ -73,6 +76,21 @@ const rigorDir = () => path.join(root, ".pi", "rigor");
 const checksPath = () => path.join(rigorDir(), "checks.json");
 const mistakesPath = () => path.join(rigorDir(), "mistakes.md");
 const lastPath = () => path.join(rigorDir(), "last.json");
+const configPath = () => path.join(rigorDir(), "config.json");
+
+function loadConfig(): { auto_fast_check: boolean } {
+	try {
+		const d = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+		return { auto_fast_check: d.auto_fast_check === true };
+	} catch {
+		return { auto_fast_check: false };
+	}
+}
+
+function saveConfig(cfg: { auto_fast_check: boolean }): void {
+	fs.mkdirSync(rigorDir(), { recursive: true });
+	fs.writeFileSync(configPath(), JSON.stringify(cfg));
+}
 
 function loadChecks(): { discovered: Check[]; custom: Check[] } {
 	try {
@@ -427,22 +445,29 @@ async function postpass(pi: ExtensionAPI): Promise<void> {
 const EDIT_TOOLS = new Set(["edit", "write", "str_replace_editor", "create"]);
 
 export function createRigorExtension(): (pi: ExtensionAPI) => void {
+	const pitfalls = createVolatileChannel("rigor-pitfalls");
 	return (pi: ExtensionAPI) => {
 		pi.on("session_start", (_event: any, ctx: any) => {
 			root = ctx?.cwd ?? root;
+			auto = loadConfig().auto_fast_check;
 			setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
+			pitfalls.reset();
 		});
 
 		pi.on("session_shutdown", () => {
 			setStatus = undefined;
 		});
 
-		pi.on("before_agent_start", (event: any) => {
+		// Pitfalls grow as the session records them, so this rides a custom message
+		// rather than the system prompt — a growing system prompt rewrites the
+		// whole cached prefix every time a pitfall lands. The channel is change-
+		// gated, so an unchanged pitfall list is not re-sent.
+		pi.on("before_agent_start", () => {
 			const m = loadMistakes();
 			if (!m.length) return;
-			const base = event?.systemPrompt ?? "";
-			const block = `RIGOR pitfalls (recorded in this repo — do not repeat):\n${m.slice(-PITFALLS_SHOWN).join("\n")}`;
-			return { systemPrompt: base ? `${base}\n${block}` : block };
+			return pitfalls.emit(
+				`RIGOR pitfalls (recorded in this repo — do not repeat):\n${m.slice(-PITFALLS_SHOWN).join("\n")}`,
+			);
 		});
 
 		pi.on("tool_call", (event: any) => {
@@ -478,6 +503,7 @@ export function createRigorExtension(): (pi: ExtensionAPI) => void {
 				else if (head === "mistake") msg = addMistake(tokens.slice(1).join(" "));
 				else if (head === "auto") {
 					auto = tokens[1] !== "off";
+					saveConfig({ auto_fast_check: auto });
 					msg = `rigor: auto fast check ${auto ? "on" : "off"}`;
 				} else msg = doStatus();
 				ctx.ui.notify(msg, msg.includes("✗") || msg.startsWith("rigor: no") ? "warning" : "info");

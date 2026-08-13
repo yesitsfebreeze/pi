@@ -3,10 +3,10 @@
  * capture. We do NOT shell out to gh; the absent path prints the body.
  */
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { IssueReporter, KIND_OPTIONS } from "../../src/core/issue-reporter.ts";
 
 const ORIG_PATH = process.env.PATH;

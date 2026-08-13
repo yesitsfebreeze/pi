@@ -2,7 +2,9 @@
 // daemons in their own process groups. Ring-buffer + log file per job. Killed
 // with the session.
 //
-// Wired directly into AgentSession; no extension layer.
+// Loaded as the `launch` core inline extension (see core-inline-extensions.ts),
+// which owns the lifecycle wiring, the `launch` tool, the /launch command, and
+// the `launch:jobs` health check surfaced to /doctor.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -37,6 +39,8 @@ interface Job {
 	child?: ChildProcess;
 	killTimer?: ReturnType<typeof setTimeout>;
 	backoffTimer?: ReturnType<typeof setTimeout>;
+	/** Pending 300ms respawn from `restart`; cleared on stop and shutdown. */
+	restartTimer?: ReturnType<typeof setTimeout>;
 }
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
@@ -215,6 +219,10 @@ export class LaunchManager {
 			clearTimeout(job.backoffTimer);
 			job.backoffTimer = undefined;
 		}
+		if (job.restartTimer) {
+			clearTimeout(job.restartTimer);
+			job.restartTimer = undefined;
+		}
 		if (!job.child) {
 			job.status = "stopped";
 			job.ended = job.ended ?? Date.now();
@@ -292,7 +300,12 @@ export class LaunchManager {
 		if (!job) return { ok: false, msg: `launch: no such job ${key}` };
 		if (job.child) {
 			this._stopJob(job);
-			setTimeout(() => {
+			// Owned by the job so shutdown can cancel it. Unowned, a session
+			// teardown within the 300ms window would SIGTERM the child, clear the
+			// job table, and then let this timer spawn a fresh detached process
+			// that nothing tracks and nothing will ever kill.
+			job.restartTimer = setTimeout(() => {
+				job.restartTimer = undefined;
 				job.restarts = 0;
 				job.ring.push(`--- restart ${new Date().toLocaleTimeString()} ---`);
 				this._spawnJob(job);
@@ -380,6 +393,7 @@ export class LaunchManager {
 	shutdown(): void {
 		for (const j of this._jobs.values()) {
 			if (j.backoffTimer) clearTimeout(j.backoffTimer);
+			if (j.restartTimer) clearTimeout(j.restartTimer);
 			if (j.child) {
 				j.status = "stopped";
 				this._signalJob(j, "SIGTERM");

@@ -3,16 +3,16 @@
  * for each check category (git, bus, logs, MCP cache).
  */
 import { execSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runDoctorProbe } from "../../src/core/doctor.ts";
+import { runDoctorPass, runDoctorProbe } from "../../src/core/doctor.ts";
 
 function tmpDir(): string {
-	const dir = join(tmpdir(), `doctor-test-${Date.now()}`);
-	mkdirSync(dir, { recursive: true });
-	return dir;
+	// mkdtempSync is unique per call — Date.now()-based names can collide at
+	// same-ms and a sibling test's finally rmSync then deletes a live repo.
+	return mkdtempSync(join(tmpdir(), "doctor-test-"));
 }
 
 describe("doctor probe", () => {
@@ -120,13 +120,14 @@ describe("doctor probe", () => {
 		}
 	});
 
-	it("includes all four checks in table output", async () => {
+	it("includes core checks in table output", async () => {
 		const dir = tmpDir();
 		try {
 			const { results, table } = await runDoctorProbe(dir);
-			expect(results.length).toBe(4);
-			const checks = results.map((r) => r.check).sort();
-			expect(checks).toEqual(["bus", "git", "logs", "mcp"]);
+			const checks = results.map((r) => r.check);
+			for (const c of ["git", "bus", "logs", "mcp"]) {
+				expect(checks).toContain(c);
+			}
 			expect(table).toContain("| Check | Status | Detail |");
 			expect(table).toContain("|-------|--------|--------|");
 		} finally {
@@ -143,6 +144,80 @@ describe("doctor probe", () => {
 				expect(order[results[i - 1].status]).toBeLessThanOrEqual(order[results[i].status]);
 			}
 		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("probes pi packages in the workspace", async () => {
+		const dir = tmpDir();
+		try {
+			// A pi package with a passing test suite.
+			const pkgDir = join(dir, "fake-pkg");
+			mkdirSync(join(pkgDir, "tests"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({ pi: { extensions: [] }, scripts: { test: "node --version" } }),
+			);
+			writeFileSync(join(pkgDir, "tests", "x.test.mjs"), "");
+			// A pi package without tests.
+			const noTestDir = join(dir, "no-test-pkg");
+			mkdirSync(noTestDir, { recursive: true });
+			writeFileSync(join(noTestDir, "package.json"), JSON.stringify({ pi: { extensions: [] } }));
+
+			const { results } = await runDoctorProbe({ cwd: dir, workspace: dir });
+			const fake = results.find((r) => r.check === "pkg:fake-pkg");
+			expect(fake?.status).toBe("PASS");
+			expect(fake?.detail).toBe("tests pass");
+			const noTest = results.find((r) => r.check === "pkg:no-test-pkg");
+			expect(noTest?.status).toBe("SKIP");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("runs the doctor pass and heals local state", async () => {
+		const dir = tmpDir();
+		const home = join(dir, "home");
+		const cwd = join(dir, "cwd");
+		const origHome = process.env.HOME;
+		const origPiBin = process.env.PI_BIN;
+		try {
+			// Sandbox pi's state dir so the heal steps touch only temp files.
+			process.env.HOME = home;
+			// `true` exits 0, standing in for `pi update --all`/`--models`.
+			process.env.PI_BIN = "true";
+
+			const agentDir = join(home, ".pi", "agent");
+			mkdirSync(agentDir, { recursive: true });
+			// An oversized log (many short lines) that rotation should trim.
+			writeFileSync(join(agentDir, "big.log"), new Array(300000).fill("y".repeat(20)).join("\n"));
+			// A stale mcp cache carrying a root combinator.
+			writeFileSync(
+				join(agentDir, "mcp-cache.json"),
+				JSON.stringify({ servers: { bad: { tools: [{ name: "t", inputSchema: { anyOf: [] } }] } } }),
+			);
+			mkdirSync(cwd, { recursive: true });
+
+			const { report, ok } = await runDoctorPass(cwd);
+
+			expect(report).toContain("✓ pi + packages");
+			expect(report).toContain("✓ model catalogs");
+			expect(report).toContain("no .pi/update.sh");
+			expect(report).toContain("rotated 1 log(s)");
+			expect(report).toContain("mcp cache healed — dropped 1");
+			expect(report).toContain("not a git repo — without one");
+			expect(report).toContain("no .preventions");
+			// The oversized log is trimmed under the cap.
+			expect(readFileSync(join(agentDir, "big.log"), "utf8").length).toBeLessThan(5 * 1024 * 1024);
+			// The stale server is dropped from the cache.
+			const healed = JSON.parse(readFileSync(join(agentDir, "mcp-cache.json"), "utf8"));
+			expect(healed.servers.bad).toBeUndefined();
+			expect(ok).toBe(true);
+		} finally {
+			if (origHome !== undefined) process.env.HOME = origHome;
+			else delete process.env.HOME;
+			if (origPiBin !== undefined) process.env.PI_BIN = origPiBin;
+			else delete process.env.PI_BIN;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
