@@ -915,6 +915,10 @@ export class InteractiveMode {
 	}
 
 	private setupAutocompleteProvider(): void {
+		// inputMode is the enhanced/plain editor switch: "plain" drops the
+		// autocomplete surface (slash/template/skill popups) — a deliberate
+		// keystroke-for-keystroke input mode. Default is enhanced.
+		if (this.settingsManager.getInputMode() !== "enhanced") return;
 		let provider = this.createBaseAutocompleteProvider();
 		const triggerCharacters: string[] = [];
 		for (const wrapProvider of this.autocompleteProviderWrappers) {
