@@ -237,7 +237,7 @@ function createLoadedResourcesContext(): LoadedResourcesContext {
 				getSkills: () => ({ skills: [], diagnostics: [] }),
 				getPrompts: () => ({ prompts: [], diagnostics: [] }),
 				getThemes: () => ({ themes: [], diagnostics: [] }),
-				getExtensions: () => ({ extensions: [], errors: [] }),
+				getExtensions: () => ({ extensions: [], errors: [], warnings: [] }),
 			},
 			extensionRunner: {
 				getCommandDiagnostics: () => [],

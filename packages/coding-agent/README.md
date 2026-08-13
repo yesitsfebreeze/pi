@@ -14,7 +14,7 @@
 
 Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
 
-Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
+Pi ships with powerful defaults, plus a set of [core inline extensions](#core-inline-extensions) — sub-agents, worktrees, background jobs, loops — built on the same public extension API you have. For anything else, you can ask pi to build what you want or install a third party pi package that matches your workflow.
 
 Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
 
@@ -52,6 +52,7 @@ I regularly publish my own `pi-mono` work sessions here:
   - [Prompt Templates](#prompt-templates)
   - [Skills](#skills)
   - [Extensions](#extensions)
+  - [Core Inline Extensions](#core-inline-extensions)
   - [Themes](#themes)
   - [Pi Packages](#pi-packages)
 - [Programmatic Usage](#programmatic-usage)
@@ -135,6 +136,7 @@ For each built-in provider, pi maintains a list of tool-capable models. Configur
 - Xiaomi MiMo Token Plan (China)
 - Xiaomi MiMo Token Plan (Amsterdam)
 - Xiaomi MiMo Token Plan (Singapore)
+- Ollama (local + Ollama Cloud, models discovered automatically — see [docs/providers.md#ollama](docs/providers.md#ollama))
 
 Pi also supports the llama.cpp router server. Configure it with `/login llama.cpp`, manage downloads and loaded models with `/llama`, then select a loaded model with `/model`. See [docs/llama-cpp.md](docs/llama-cpp.md) for setup and usage.
 
@@ -397,6 +399,25 @@ The default export can also be `async`. pi waits for async extension factories b
 - ...anything you can dream up
 
 Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+
+### Core Inline Extensions
+
+Some features ship as extensions compiled into pi rather than loaded from disk. They are always on, load before disk-discovered extensions, and use exactly the same `ExtensionAPI`:
+
+| | |
+|---|---|
+| `crew` | Sub-agent dispatch against role profiles, plus a walkie-talkie channel so dispatched agents can steer and be steered |
+| `layers` | Develop on `refs/layers/<name>` without a worktree; provenance trailers on every commit; test before merge |
+| `forest` | Isolated git worktrees under `.pi/trees/`, with write-scope enforcement |
+| `launch` | Background jobs (dev servers, watchers) in their own process groups, killed with the session |
+| `until` | Goal loops, scheduled loops, and timeboxed pace loops |
+| `rigor` / `simplify` | Discover and run the repo's own checks; post-change follow-up via sub-agents |
+| `persona` | Agent identity injected into the system prompt |
+| `gantt` / `crawl` / `memory` / `recipes` | Ticket board, web research, knowledge graph, executable knowledge base |
+
+Plus `/doctor`, which runs pi's own health probes and any health check an extension registered via `pi.registerHealthCheck()`.
+
+For the full list of 19 and what each registers, see [docs/core-extensions.md](docs/core-extensions.md).
 
 ### Themes
 

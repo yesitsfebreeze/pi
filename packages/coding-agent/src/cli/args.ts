@@ -360,6 +360,8 @@ ${chalk.bold("Environment Variables:")}
   GROQ_API_KEY                     - Groq API key
   CEREBRAS_API_KEY                 - Cerebras API key
   XAI_API_KEY                      - xAI Grok API key
+  OLLAMA_API_KEY                   - Ollama Cloud API key (local Ollama needs no key)
+  OLLAMA_BASE_URL                  - Local Ollama server URL (default: http://localhost:11434)
   FIREWORKS_API_KEY                - Fireworks API key
   TOGETHER_API_KEY                 - Together AI API key
   BASETEN_API_KEY                  - Baseten API key

@@ -305,8 +305,13 @@ describe("procs: supervised children", () => {
 	it("children that exit report exited(code)", async () => {
 		const r = await spawnChild("/bin/sh", ["-c", "exit 3"]);
 		if (!r.ok) return;
-		await sleep(150);
-		const rec = listChildren().find((c) => c.jobId === r.jobId);
+		// Poll instead of a fixed sleep — a loaded machine can delay the exit.
+		let rec = listChildren().find((c) => c.jobId === r.jobId);
+		const t0 = Date.now();
+		while (Date.now() - t0 < 3000 && rec?.status === "running") {
+			await sleep(50);
+			rec = listChildren().find((c) => c.jobId === r.jobId);
+		}
 		expect(rec?.status).toBe("exited(3)");
 		killAllChildren();
 	});
@@ -334,8 +339,12 @@ describe("procs: valgrind jobs", () => {
 		const r = await startValgrind("/bin/true", [], "memcheck", 30, stub);
 		expect(r.ok).toBe(true);
 		if (!r.ok) return;
-		await sleep(300);
-		const s = valgrindStatus(r.jobId);
+		let s = valgrindStatus(r.jobId);
+		const t0 = Date.now();
+		while (Date.now() - t0 < 3000 && s.ok && s.status === "running") {
+			await sleep(50);
+			s = valgrindStatus(r.jobId);
+		}
 		expect(s.ok).toBe(true);
 		if (s.ok) {
 			expect(s.status).toBe("done");

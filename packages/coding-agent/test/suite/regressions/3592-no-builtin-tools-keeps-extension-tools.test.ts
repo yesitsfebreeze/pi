@@ -16,6 +16,12 @@ import { SettingsManager } from "../../../src/core/settings-manager.ts";
 describe("regression #3592: no-builtin-tools keeps extension tools enabled", () => {
 	let tempDir: string;
 	let agentDir: string;
+	// Every session built here binds all core inline extensions, whose
+	// session_start handlers write into tempDir (memory seeds an ontology
+	// digest) and arm timers (memory's 30s poll, crew's heartbeat). Deleting
+	// tempDir without disposing them races those writes and fails cleanup with
+	// ENOTEMPTY — intermittently, which is worse than always.
+	const sessions: Array<{ dispose: () => void }> = [];
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `pi-no-builtin-tools-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -24,6 +30,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 	});
 
 	afterEach(() => {
+		for (const session of sessions.splice(0)) session.dispose();
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -67,22 +74,61 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			tools: options?.tools,
 		});
 		await session.bindExtensions({});
+		sessions.push(session);
 		return session;
 	}
+
+	it("keeps the tools meta-tool active on the default SDK surface", async () => {
+		const session = await createSession({});
+
+		const active = session.getActiveToolNames();
+		for (const name of ["read", "bash", "edit", "write"]) expect(active).toContain(name);
+		// The deferred-tools prompt section tells the model to "make a real tool
+		// call to `tools`" whenever anything is deferred, so the meta-tool must be
+		// active on the default surface — regression for "Tool tools not found".
+		expect(active).toContain("tools");
+		session.dispose();
+	});
 
 	it("keeps extension tools active when built-in defaults are disabled", async () => {
 		const session = await createSession({ noTools: "builtin" });
 
+		const allToolNames = session
+			.getAllTools()
+			.map((tool) => tool.name)
+			.sort();
+		const active = session.getActiveToolNames();
+		const builtins = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+		// The meta-tool stays hot even when the built-in defaults are off: the
+		// deferred-tools prompt section advertises it, so it must be reachable.
+		expect(active).toContain("tools");
+		// Built-in tools stay in the available catalog…
+		for (const name of builtins) expect(allToolNames).toContain(name);
+		// …but none of them are active.
+		for (const name of builtins) expect(active).not.toContain(name);
+		// Extension tools stay registered and reachable. The tool band defers their
+		// schemas (see core/tools/band.ts), so they are listed for restore rather
+		// than active — disabling the built-ins does not change that either way.
+		expect(session.getAllTools().map((tool) => tool.name)).toContain("dynamic_tool");
+		expect(session.getDeferredToolNames()).toContain("dynamic_tool");
+		expect(session.systemPrompt).toContain("- dynamic_tool — Run dynamic test behavior");
+		expect(session.systemPrompt).not.toContain("- read:");
+		expect(session.systemPrompt).not.toContain("- bash:");
+		session.dispose();
+	});
+
+	it("respects an explicit allowlist — no implicit tools meta-tool", async () => {
+		const session = await createSession({ tools: ["read", "bash"] });
+
+		// An explicit allowlist is the user's exact surface: nothing is registered
+		// beyond it (so nothing deferred is advertised, and no meta-tool is needed).
 		expect(
 			session
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual(["bash", "dynamic_tool", "edit", "find", "grep", "ls", "read", "write"]);
-		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
-		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
-		expect(session.systemPrompt).not.toContain("- read:");
-		expect(session.systemPrompt).not.toContain("- bash:");
+		).toEqual(["bash", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
 		session.dispose();
 	});
 
@@ -111,8 +157,12 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			noTools: "builtin",
 		});
 
-		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		const active = session.getActiveToolNames();
+		const builtins = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+		// Built-in defaults are disabled…
+		for (const name of builtins) expect(active).not.toContain(name);
+		// …but the core inline extension tools stay active.
+		expect(active.length).toBeGreaterThan(0);
 		expect(session.systemPrompt).not.toContain("- read:");
 		session.dispose();
 	});

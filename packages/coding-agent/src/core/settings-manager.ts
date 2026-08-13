@@ -1254,6 +1254,7 @@ export class SettingsManager {
 	setInputMode(mode: "enhanced" | "plain"): void {
 		this.globalSettings.inputMode = mode;
 		this.markModified("inputMode");
+		this.save();
 	}
 
 	setEditorPaddingX(padding: number): void {

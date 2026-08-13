@@ -27,7 +27,7 @@ describe("issue #7193 extension event-bus lifecycle", () => {
 		const loadExtensions = async () => {
 			const runtime = createExtensionRuntime();
 			const extension = await loadExtensionFromFactory(factory, process.cwd(), eventBus, runtime);
-			return { extensions: [extension], errors: [], runtime };
+			return { extensions: [extension], errors: [], warnings: [], runtime };
 		};
 		let extensionsResult = await loadExtensions();
 		const resourceLoader: ResourceLoader = {
@@ -36,6 +36,7 @@ describe("issue #7193 extension event-bus lifecycle", () => {
 			getPrompts: () => ({ prompts: [], diagnostics: [] }),
 			getThemes: () => ({ themes: [], diagnostics: [] }),
 			getAgentsFiles: () => ({ agentsFiles: [] }),
+			getRecipes: () => ({ recipes: [], diagnostics: [] }),
 			getSystemPrompt: () => undefined,
 			getSystemPromptSource: () => undefined,
 			getAppendSystemPrompt: () => [],
