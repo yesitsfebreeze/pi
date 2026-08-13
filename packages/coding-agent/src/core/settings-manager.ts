@@ -13,6 +13,10 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	/** Trailing window (in user/assistant turns) kept fully in context; older
+	 * turns have their tool traffic stripped before sending to the model.
+	 * 0 disables history-slim (default). The session file keeps the full trace. */
+	historySlimWindow?: number; // default: 0 (disabled)
 }
 
 export interface BranchSummarySettings {
@@ -124,6 +128,8 @@ export interface Settings {
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
 	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
+	/** Input editor mode: "enhanced" (multi-line with selection) or "plain" (single-line). Default: "enhanced". */
+	inputMode?: "enhanced" | "plain";
 	outputPad?: 0 | 1; // Horizontal padding for chat message output (default: 1)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
@@ -134,9 +140,7 @@ export interface Settings {
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"
-	/** Restrict file writes to specific directories. Default: git worktree root when inside a repo, unrestricted otherwise.
-	 *  Set to true (default), false to disable, or an array of absolute paths to allow. */
-	writeScope?: boolean | string[];
+	wheelScrollTrail?: number; // Max inertia trail lines for wheel scrolling (default: 5)
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -786,12 +790,33 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		historySlimWindow: number;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			historySlimWindow: this.getHistorySlimWindow(),
 		};
+	}
+
+	/** Trailing turns kept fully in context; older turns have tool traffic
+	 * stripped. 0 disables history-slim. See CompactionSettings.historySlimWindow. */
+	getHistorySlimWindow(): number {
+		return this.settings.compaction?.historySlimWindow ?? 0;
+	}
+
+	setHistorySlimWindow(window: number): void {
+		if (!this.globalSettings.compaction) {
+			this.globalSettings.compaction = {};
+		}
+		this.globalSettings.compaction.historySlimWindow = Math.max(0, Math.floor(window));
+		this.markModified("compaction", "historySlimWindow");
+		this.save();
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {
@@ -1133,14 +1158,20 @@ export class SettingsManager {
 		return mode === "always" || mode === "hidden" ? mode : "auto";
 	}
 
-	/** Get the write scope configuration. Returns true for default git-root behavior. */
-	getWriteScope(): boolean | string[] {
-		return this.settings.writeScope ?? true;
-	}
-
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {
 		this.globalSettings.fullscreenScrollbar = mode;
 		this.markModified("fullscreenScrollbar");
+		this.save();
+	}
+
+	getWheelScrollTrail(): number {
+		const trail = this.settings.wheelScrollTrail;
+		return Number.isFinite(trail) && (trail as number) > 0 ? Math.floor(trail as number) : 5;
+	}
+
+	setWheelScrollTrail(trail: number): void {
+		this.globalSettings.wheelScrollTrail = Math.max(1, Math.floor(trail));
+		this.markModified("wheelScrollTrail");
 		this.save();
 	}
 
@@ -1214,6 +1245,15 @@ export class SettingsManager {
 
 	getEditorPaddingX(): number {
 		return this.settings.editorPaddingX ?? 0;
+	}
+
+	getInputMode(): "enhanced" | "plain" {
+		return this.settings.inputMode ?? "enhanced";
+	}
+
+	setInputMode(mode: "enhanced" | "plain"): void {
+		this.globalSettings.inputMode = mode;
+		this.markModified("inputMode");
 	}
 
 	setEditorPaddingX(padding: number): void {

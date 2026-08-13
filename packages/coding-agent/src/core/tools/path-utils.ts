@@ -1,25 +1,7 @@
-import { execSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
-
-/** Cache of resolved git roots, keyed by cwd. Lazy, one-shot per session. */
-const gitRootCache = new Map<string, string | undefined>();
-
-/** Resolve the git repository root for a given cwd. Returns undefined outside a repo. */
-export function resolveGitRoot(cwd: string): string | undefined {
-	const cached = gitRootCache.get(cwd);
-	if (cached !== undefined) return cached;
-	try {
-		const root = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf8", timeout: 5000 }).trim();
-		gitRootCache.set(cwd, root);
-		return root;
-	} catch {
-		gitRootCache.set(cwd, undefined);
-		return undefined;
-	}
-}
 
 /**
  * Check whether an absolute path is within an allowed scope prefix.
@@ -31,32 +13,6 @@ export function checkWriteScope(absolutePath: string, scopePrefixes: string[]): 
 		if (!rel.startsWith("..") && !isAbsolute(rel)) return undefined;
 	}
 	return scopePrefixes[0];
-}
-
-/** Redirect extraction patterns for bash command scope checking. */
-const REDIR_PATTERNS = [
-	/(?<![\d\->])&?\d?>>?\s*([^\s;&|<>()]+)/g,
-	/\btee\b(?:\s+-[a-zA-Z]*)*\s+([^\s;&|<>()]+)/g,
-	/\b(?:cp|mv|rsync|install|ln)\b(?:\s+-[a-zA-Z0-9./]+)*(?<!-t|-T)\s+[^\s;&|<>()-]+\s+([^\s;&|<>()]+)/g,
-	/\bdd\b[^;&|]*?\bof=([^\s;&|<>()]+)/g,
-	/\bsed\s+(-[^\s;&|]*i[^\s;&|]*)((?:\s+[^\s;&|<>()]+)+)/g,
-];
-
-/** Extract potential write destination paths from a bash command string. */
-export function extractBashRedirectPaths(command: string): string[] {
-	const paths = new Set<string>();
-	for (const pattern of REDIR_PATTERNS) {
-		for (const match of command.matchAll(pattern)) {
-			const captures = match.slice(1).filter(Boolean) as string[];
-			for (const cap of captures) {
-				// split multi-arg groups (sed -i, cp/mv targets, tee)
-				for (const part of cap.split(/\s+/)) {
-					if (part && !part.startsWith("-")) paths.add(part);
-				}
-			}
-		}
-	}
-	return [...paths];
 }
 
 const NARROW_NO_BREAK_SPACE = "\u202F";

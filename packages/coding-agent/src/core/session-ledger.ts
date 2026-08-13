@@ -94,7 +94,12 @@ const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * within the recent window. Returns the resume command or null.
  */
 export function ledgerSuggestResume(): string | null {
-	if (!process.env.PI_AUTO_RESUME && process.env.PI_AUTO_RESUME !== "1") return null;
+	// Opt-in, and explicitly opt-out-able. The previous `&&` form let
+	// PI_AUTO_RESUME=0 through: the first clause is false for any non-empty
+	// value, so the conjunction short-circuited and a value meant to disable
+	// the suggestion enabled it instead.
+	const flag = process.env.PI_AUTO_RESUME;
+	if (flag !== "1" && flag?.toLowerCase() !== "true") return null;
 	const entries = loadLedger();
 	if (entries.length === 0) return null;
 

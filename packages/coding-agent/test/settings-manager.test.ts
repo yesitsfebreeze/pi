@@ -420,6 +420,20 @@ describe("SettingsManager", () => {
 		expect(reloadedManager.getFullscreenScrollbar()).toBe("auto");
 	});
 
+	it("validates and persists the wheel scroll trail", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getWheelScrollTrail()).toBe(5);
+
+		manager.setWheelScrollTrail(8);
+		await manager.flush();
+		const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+		expect(savedSettings.wheelScrollTrail).toBe(8);
+
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ wheelScrollTrail: 0 }));
+		const reloadedManager = SettingsManager.create(projectDir, agentDir);
+		expect(reloadedManager.getWheelScrollTrail()).toBe(5);
+	});
+
 	describe("outputPad", () => {
 		it("should default to 1 and persist binary values", async () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

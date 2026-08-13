@@ -8,13 +8,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
-import type { Persona } from "./persona-loader.ts";
-import { loadPersonas, sortPersonas } from "./persona-loader.ts";
+import { loadDefaultPersona, loadPersonas, type Persona } from "./persona-loader.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const DEFAULT_ID = "substrate";
+
+import { resolvePiDirs } from "../pi-dirs.ts";
+
 const OVERRIDE_FILE = ".pi/persona.md";
 const STATUS_KEY = "persona";
 
@@ -35,7 +37,8 @@ export class PersonaManager {
 
 	/** Reload personas from all search directories. */
 	private _reload(): void {
-		this._personas = sortPersonas(loadPersonas(this._searchDirs));
+		// loadPersonas already returns them sorted.
+		this._personas = loadPersonas(this._searchDirs);
 	}
 
 	/** The currently selected persona id. */
@@ -53,9 +56,14 @@ export class PersonaManager {
 		return this._personas.find((p) => p.id === id);
 	}
 
-	/** The active persona object (or undefined if none loaded). */
+	/** The active persona object (or the loaded default if the selected one vanished). */
 	get active(): Persona | undefined {
-		return this.getPersona(this._selectedId);
+		return this.getPersona(this._selectedId) ?? this.getDefaultPersona();
+	}
+
+	/** The substrate default persona from the current search dirs (or undefined if none shipped). */
+	getDefaultPersona(): Persona | undefined {
+		return loadDefaultPersona(this._searchDirs) ?? undefined;
 	}
 
 	/**
@@ -73,10 +81,12 @@ export class PersonaManager {
 		return bodyOnly;
 	}
 
-	/** Read repo-level persona override from .pi/persona.md. */
+	/** Read repo-level persona override from .pi/persona.md, resolved at the
+	 * project root (walks up to .pi/.git) so a subdirectory cwd still finds it. */
 	private _repoOverride(): string | null {
 		try {
-			const text = readFileSync(join(this._cwd, OVERRIDE_FILE), "utf8").trim();
+			const root = resolvePiDirs(this._cwd).projectDir ?? this._cwd;
+			const text = readFileSync(join(root, OVERRIDE_FILE), "utf8").trim();
 			return text || null;
 		} catch {
 			return null;
@@ -116,7 +126,7 @@ export class PersonaManager {
 
 	/** Reset to default (substrate). */
 	reset(): void {
-		this._selectedId = DEFAULT_ID;
+		this._selectedId = this.getDefaultPersona()?.id ?? DEFAULT_ID;
 	}
 
 	/** Update the working directory and reload personas (picks up a repo override + project personas). */
@@ -198,7 +208,7 @@ export class PersonaManager {
 		let sel = startIdx;
 		let cache: string[] | undefined;
 
-		const chosen = await ctx.ui.custom<Persona | null>((tui, theme, keybindings, done) => {
+		const chosen = await ctx.ui.custom<Persona | null>((tui, theme, _keybindings, done) => {
 			const render = (width: number): string[] => {
 				if (cache) return cache;
 				const cols = process.stdout?.columns ?? 80;
