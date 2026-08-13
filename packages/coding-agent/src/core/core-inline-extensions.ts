@@ -9,6 +9,7 @@
  * This module is the single wiring point that makes them live in every session.
  */
 import { resolve } from "node:path";
+import { createBtwInlineExtension } from "./btw/index.ts";
 import { autoInjectedBlock, createVolatileChannel } from "./context-injection.ts";
 import { createCrawlInlineExtension } from "./crawl/index.ts";
 import { createCrewExtension } from "./crew/index.ts";
@@ -409,6 +410,14 @@ export function createGanttExtension(): InlineExtension {
 }
 
 // ---------------------------------------------------------------------------
+// btw — the side channel: read-only subagent in a resumable session + index
+// ---------------------------------------------------------------------------
+
+export function createBtwExtension(): InlineExtension {
+	return createBtwInlineExtension();
+}
+
+// ---------------------------------------------------------------------------
 // crawl — web research / topic scoring (local store, no external CLI)
 // ---------------------------------------------------------------------------
 
@@ -498,6 +507,7 @@ export function getCoreInlineExtensions(): InlineExtension[] {
 		createPiBackupExtension(),
 		createInitExtension(),
 		createGanttExtension(),
+		createBtwExtension(),
 		createCrawlExtension(),
 		createRecipesExtension(),
 		createMemExtension(),
