@@ -5,17 +5,15 @@
  * available fuzzy-finder plugins (telescope, fzf-lua).
  */
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { ToolDefinition } from "../extensions/types.js";
-import { wrapToolDefinition } from "../tools/tool-definition-wrapper.js";
-import { createNvimConfigAgentTool, createNvimConfigTool } from "./nvim-config-tool.js";
-import type { NvimSocketClient } from "./nvim-socket-client.js";
-import { createNvimSurfaceAgentTools, createNvimSurfaceToolDefinitions } from "./nvim-surface.js";
-import type { NvimDiagnostic, NvimLspLocation } from "./nvim-transport-types.js";
+import type { ToolDefinition } from "../extensions/types.ts";
+import { createNvimConfigTool } from "./nvim-config-tool.ts";
+import type { NvimSocketClient } from "./nvim-socket-client.ts";
+import { createNvimSurfaceToolDefinitions } from "./nvim-surface.ts";
+import type { NvimDiagnostic, NvimLspLocation } from "./nvim-transport-types.ts";
 
-export { createNvimConfigAgentTool, createNvimConfigTool } from "./nvim-config-tool.js";
+export { createNvimConfigTool } from "./nvim-config-tool.ts";
 
 function resolvePath(path: string | undefined, _cwd: string, client: NvimSocketClient): Promise<string> {
 	if (path) return Promise.resolve(path);
@@ -47,6 +45,7 @@ export function createLspDiagnosticsTool(
 	return {
 		name: "lsp_diagnostics",
 		label: "lsp_diagnostics",
+		promptSnippet: "LSP diagnostics for a buffer (errors, warnings, hints)",
 		description: "Get LSP diagnostics for a buffer. Returns errors, warnings, hints.",
 		parameters: lspDiagnosticsSchema,
 		async execute(_id, { path }, _signal) {
@@ -70,13 +69,6 @@ export function createLspDiagnosticsTool(
 	};
 }
 
-export function createLspDiagnosticsAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof lspDiagnosticsSchema> {
-	return wrapToolDefinition(createLspDiagnosticsTool(cwd, client));
-}
-
 // ── lsp_references ──────────────────────────────────────────────────────────
 
 const lspReferencesSchema = Type.Object({
@@ -92,6 +84,7 @@ export function createLspReferencesTool(
 	return {
 		name: "lsp_references",
 		label: "lsp_references",
+		promptSnippet: "All LSP references to the symbol at cursor/position",
 		description: "Find all LSP references to the symbol at the cursor (or specified position).",
 		parameters: lspReferencesSchema,
 		async execute(_id, { path, line, col }, _signal) {
@@ -125,13 +118,6 @@ export function createLspReferencesTool(
 	};
 }
 
-export function createLspReferencesAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof lspReferencesSchema> {
-	return wrapToolDefinition(createLspReferencesTool(cwd, client));
-}
-
 // ── lsp_definition ──────────────────────────────────────────────────────────
 
 const lspDefinitionSchema = Type.Object({
@@ -147,6 +133,7 @@ export function createLspDefinitionTool(
 	return {
 		name: "lsp_definition",
 		label: "lsp_definition",
+		promptSnippet: "LSP go-to-definition for the symbol at cursor/position",
 		description: "Go to the definition of the symbol at the cursor (or specified position).",
 		parameters: lspDefinitionSchema,
 		async execute(_id, { path, line, col }, _signal) {
@@ -180,13 +167,6 @@ export function createLspDefinitionTool(
 	};
 }
 
-export function createLspDefinitionAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof lspDefinitionSchema> {
-	return wrapToolDefinition(createLspDefinitionTool(cwd, client));
-}
-
 // ── lsp_hover ───────────────────────────────────────────────────────────────
 
 const lspHoverSchema = Type.Object({
@@ -199,6 +179,7 @@ export function createLspHoverTool(cwd: string, client: NvimSocketClient): ToolD
 	return {
 		name: "lsp_hover",
 		label: "lsp_hover",
+		promptSnippet: "LSP hover info for the symbol at cursor/position",
 		description: "Get LSP hover information for the symbol at the cursor (or specified position).",
 		parameters: lspHoverSchema,
 		async execute(_id, { path, line, col }, _signal) {
@@ -235,10 +216,6 @@ export function createLspHoverTool(cwd: string, client: NvimSocketClient): ToolD
 	};
 }
 
-export function createLspHoverAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof lspHoverSchema> {
-	return wrapToolDefinition(createLspHoverTool(cwd, client));
-}
-
 // ── ts_query ────────────────────────────────────────────────────────────────
 
 const tsQuerySchema = Type.Object({
@@ -252,6 +229,7 @@ export function createTsQueryTool(cwd: string, client: NvimSocketClient): ToolDe
 	return {
 		name: "ts_query",
 		label: "ts_query",
+		promptSnippet: "Query the treesitter AST of a buffer",
 		description: "Query the treesitter AST of a buffer. Returns matching nodes and their ranges.",
 		parameters: tsQuerySchema,
 		async execute(_id, { path, query }, _signal) {
@@ -279,10 +257,6 @@ export function createTsQueryTool(cwd: string, client: NvimSocketClient): ToolDe
 	};
 }
 
-export function createTsQueryAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof tsQuerySchema> {
-	return wrapToolDefinition(createTsQueryTool(cwd, client));
-}
-
 // ── buffers ─────────────────────────────────────────────────────────────────
 
 const buffersSchema = Type.Object({});
@@ -291,6 +265,7 @@ export function createBuffersTool(client: NvimSocketClient): ToolDefinition<type
 	return {
 		name: "buffers",
 		label: "buffers",
+		promptSnippet: "List open nvim buffers with filetype and modified status",
 		description: "List all open nvim buffers with their filetype and modified status.",
 		parameters: buffersSchema,
 		async execute() {
@@ -316,10 +291,6 @@ export function createBuffersTool(client: NvimSocketClient): ToolDefinition<type
 	};
 }
 
-export function createBuffersAgentTool(client: NvimSocketClient): AgentTool<typeof buffersSchema> {
-	return wrapToolDefinition(createBuffersTool(client));
-}
-
 // ── nvim_search (telescope/fzf-lua/vimgrep) ────────────────────────────────
 
 const nvimSearchSchema = Type.Object({
@@ -327,51 +298,64 @@ const nvimSearchSchema = Type.Object({
 	path: Type.Optional(
 		Type.String({ description: "Directory or file to search (default: current buffer's directory)" }),
 	),
-	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts'" })),
-	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal (default: false)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum matches (default: 100)" })),
-	backend: Type.Optional(
+	glob: Type.Optional(
 		Type.String({
-			description:
-				"Search backend: 'auto' (uses telescope > fzf-lua > vimgrep), 'telescope', 'fzf_lua', 'vimgrep'. Default: 'auto'.",
+			description: "Filter matches by glob, e.g. '*.ts' (basename) or 'src/**/*.ts' (path).",
 		}),
 	),
+	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal (default: false)" })),
+	limit: Type.Optional(Type.Number({ description: "Maximum matches (default: 100)" })),
 });
 
 export function createNvimSearchTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof nvimSearchSchema> {
 	return {
 		name: "nvim_search",
 		label: "nvim_search",
+		promptSnippet: "Search project files via nvim (vimgrep), optionally filtered by glob",
 		description:
-			"Search project files using nvim's built-in search backends. " +
-			"Automatically selects the best available: telescope, fzf-lua, or vimgrep. " +
-			"Results are shown in the quickfix list and returned here.",
+			"Search project files using nvim's vimgrep. Optionally filter matches by glob. " +
+			"Results are placed in the quickfix list and returned here.",
 		parameters: nvimSearchSchema,
-		async execute(_id, { pattern, path, glob, literal, limit, backend }, _signal) {
+		async execute(_id, { pattern, path, glob, literal, limit }, _signal) {
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 100;
-			const searchBackend = backend || "auto";
 
-			const escaped = pattern.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-			const escapedPath = searchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-			const globFilter = glob ? `, glob="${glob}"` : "";
+			const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+			const escaped = esc(pattern);
+			const escapedPath = esc(searchPath);
+			const escapedGlob = glob ? esc(glob) : "";
 
 			const lua = `
 local results = {}
-local backend = "${searchBackend}"
 local pattern = "${escaped}"
 local searchPath = "${escapedPath}"
 local limit = ${searchLimit}
 local literal = ${literal ? "true" : "false"}
+local glob = ${glob ? `"${escapedGlob}"` : "nil"}
 
-local function use_vimgrep()
-  local flag = literal and "F" or ""
-  vim.cmd("silent! vimgrep /" .. flag .. pattern .. "/j " .. searchPath .. "/**")
-  local qf = vim.fn.getqflist()
-  for i = 1, math.min(#qf, limit) do
-    local item = qf[i]
+-- Honour the advertised glob filter: match it against the basename, and
+-- against the path too when the glob spans directories (e.g. 'src/**/*.ts').
+local glob_re = glob and vim.fn.glob2regpat(glob) or nil
+local glob_spans_dirs = glob and glob:find("/") ~= nil
+local function keep(file)
+  if not glob_re then return true end
+  local subject = glob_spans_dirs and file or vim.fn.fnamemodify(file, ":t")
+  return vim.fn.match(subject, glob_re) >= 0
+end
+
+-- vimgrep is the only programmatic backend here: telescope and fzf-lua are
+-- interactive pickers with no headless grep API, so every "backend" branch
+-- this tool used to advertise ended up calling vimgrep anyway.
+local flag = literal and "F" or ""
+vim.cmd("silent! vimgrep /" .. flag .. pattern .. "/j " .. searchPath .. "/**")
+local qf = vim.fn.getqflist()
+for i = 1, #qf do
+  if #results >= limit then break end
+  local item = qf[i]
+  local file = vim.fn.bufname(item.bufnr)
+  if keep(file) then
     table.insert(results, {
-      file = vim.fn.bufname(item.bufnr),
+      file = file,
       lnum = item.lnum,
       col = item.col,
       text = (item.text or ""):sub(1, 200),
@@ -379,36 +363,7 @@ local function use_vimgrep()
   end
 end
 
-local function use_grep()
-  -- Use nvim's built-in vim.fn.system for grep
-  local cmd = "grep -rn"
-  if not literal then cmd = cmd .. "E" end
-  cmd = cmd .. " '" .. pattern .. "' " .. searchPath .. " 2>/dev/null | head -" .. limit
-  local output = vim.fn.system(cmd)
-  for line in output:gmatch("[^\\n]+") do
-    local file, lnum, text = line:match("^([^:]+):(%d+):(.*)$")
-    if file then
-      table.insert(results, { file = file, lnum = tonumber(lnum), col = 0, text = text:sub(1, 200) })
-    end
-  end
-end
-
--- Try backends in order of preference
-if backend == "telescope" or backend == "auto" then
-  local ok, _ = pcall(require, "telescope.builtin")
-  if ok then
-    -- telescope is loaded; use vimgrep as quickest path for programmatic use
-    use_vimgrep()
-  else
-    use_vimgrep()
-  end
-elseif backend == "fzf_lua" then
-  use_vimgrep() -- fzf-lua doesn't have a programmatic grep API like telescope
-else
-  use_vimgrep()
-end
-
-return vim.inspect(results)
+return vim.fn.json_encode(results)
 `;
 			const result = await client.evalLua(lua);
 			try {
@@ -451,21 +406,12 @@ return vim.inspect(results)
 	};
 }
 
-export function createNvimSearchAgentTool(cwd: string, client: NvimSocketClient): AgentTool<typeof nvimSearchSchema> {
-	return wrapToolDefinition(createNvimSearchTool(cwd, client));
-}
-
 // ── nvim_find_files (telescope/fzf-lua/fd) ─────────────────────────────────
 
 const nvimFindFilesSchema = Type.Object({
 	pattern: Type.String({ description: "Glob pattern, e.g. '*.ts', '**/*.json'" }),
 	path: Type.Optional(Type.String({ description: "Directory to search (default: current buffer's directory)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum results (default: 200)" })),
-	backend: Type.Optional(
-		Type.String({
-			description: "Search backend: 'auto', 'telescope', 'fzf_lua', 'fd', 'glob'. Default: 'auto'.",
-		}),
-	),
 });
 
 export function createNvimFindFilesTool(
@@ -475,14 +421,14 @@ export function createNvimFindFilesTool(
 	return {
 		name: "nvim_find_files",
 		label: "nvim_find_files",
+		promptSnippet: "Find files by glob via nvim globpath",
 		description:
-			"Find files by glob pattern using nvim's available fuzzy-finder backends. " +
-			"Uses telescope, fzf-lua, fd, or nvim globpath in that order of preference.",
+			"Find files by glob pattern using nvim's globpath, which respects the user's 'wildignore'. " +
+			"Always available — needs no fuzzy-finder plugin.",
 		parameters: nvimFindFilesSchema,
-		async execute(_id, { pattern, path, limit, backend }, _signal) {
+		async execute(_id, { pattern, path, limit }, _signal) {
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 200;
-			const searchBackend = backend || "auto";
 
 			const escaped = pattern.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 			const escapedPath = searchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -499,7 +445,7 @@ for i = 1, math.min(#files, limit) do
   table.insert(results, vim.fn.fnamemodify(files[i], ":."))
 end
 
-return vim.inspect(results)
+return vim.fn.json_encode(results)
 `;
 			const result = await client.evalLua(lua);
 			try {
@@ -538,13 +484,6 @@ return vim.inspect(results)
 	};
 }
 
-export function createNvimFindFilesAgentTool(
-	cwd: string,
-	client: NvimSocketClient,
-): AgentTool<typeof nvimFindFilesSchema> {
-	return wrapToolDefinition(createNvimFindFilesTool(cwd, client));
-}
-
 // ── all nvim tools ──────────────────────────────────────────────────────────
 
 export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient): ToolDefinition[] {
@@ -559,20 +498,5 @@ export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient)
 		createNvimConfigTool(client),
 		createNvimSearchTool(cwd, client),
 		createNvimFindFilesTool(cwd, client),
-	];
-}
-
-export function createNvimAgentTools(cwd: string, client: NvimSocketClient): AgentTool<any>[] {
-	return [
-		...createNvimSurfaceAgentTools(client),
-		createLspDiagnosticsAgentTool(cwd, client),
-		createLspReferencesAgentTool(cwd, client),
-		createLspDefinitionAgentTool(cwd, client),
-		createLspHoverAgentTool(cwd, client),
-		createTsQueryAgentTool(cwd, client),
-		createBuffersAgentTool(client),
-		createNvimConfigAgentTool(client),
-		createNvimSearchAgentTool(cwd, client),
-		createNvimFindFilesAgentTool(cwd, client),
 	];
 }

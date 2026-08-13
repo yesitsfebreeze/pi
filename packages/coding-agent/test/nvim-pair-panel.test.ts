@@ -5,7 +5,7 @@
  * Framework: vitest. `copyToClipboard` is mocked so no native clipboard / OS
  * tool is invoked.
  */
-import { describe, expect, it, vi, beforeAll } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 // Mock the clipboard module before importing the panel, which imports it for
@@ -29,6 +29,11 @@ function makePanel(onDone = vi.fn()): NvimPairPanel {
 
 describe("NvimPairPanel", () => {
 	beforeAll(() => initTheme("dark"));
+	// The clipboard mock is created once by the module factory, so without this
+	// its call history carries between tests and a `toHaveBeenCalledWith` is
+	// satisfied by an *earlier* test's call — the "lowercase c" case passed even
+	// with the handler deleted.
+	beforeEach(() => vi.clearAllMocks());
 	it("renders the socket path and the Ex command", () => {
 		const panel = makePanel();
 		const lines = panel.render(80).join("\n");
@@ -57,9 +62,11 @@ describe("NvimPairPanel", () => {
 
 	it("lowercase c also copies", async () => {
 		const panel = makePanel();
+		panel.focused = true;
 		panel.handleInput("c");
 		await Promise.resolve();
 		await Promise.resolve();
+		expect(copyToClipboard).toHaveBeenCalledTimes(1);
 		expect(copyToClipboard).toHaveBeenCalledWith(`lua vim.fn.serverstart('${SOCKET}')`);
 	});
 });

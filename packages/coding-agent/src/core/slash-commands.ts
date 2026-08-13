@@ -40,8 +40,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "resume", description: "Resume a different session" },
 	{
 		name: "nvim",
-		description: "Connect to nvim: /nvim generates a pairing code, /nvim <code|socket-path> connects",
-		argumentHint: "[code|socket]",
+		description: "Connect to nvim (pairing code or socket path); /nvim learn re-scans the config and records changes",
+		argumentHint: "[code|socket|learn]",
 	},
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },

@@ -17,7 +17,7 @@
  * real JS objects instead of `vim.inspect` strings.
  */
 
-import type { NvimExec } from "../nvim.js";
+import type { NvimExec } from "../nvim.ts";
 import type {
 	NvimBuffer,
 	NvimBufferEdit,
@@ -28,7 +28,7 @@ import type {
 	NvimLspLocation,
 	NvimStateBrief,
 	NvimStateFull,
-} from "./nvim-transport-types.js";
+} from "./nvim-transport-types.ts";
 
 export interface NvimSocketOptions {
 	socketPath: string;
@@ -100,7 +100,10 @@ export class NvimSocketClient {
 	/** Get state of the current nvim buffer: path, content, cursor, selection. */
 	async getBufferState(name?: string): Promise<NvimBufferState | null> {
 		try {
-			const nameArg = name ? `"${NvimSocketClient.#luaQuote(name)}"` : "nil";
+			// Resolve the name to a buffer number first: nvim API functions reject
+			// string buffer names in `nvim_buf_*` calls ("Expected Lua number").
+			// vim.fn.bufnr handles strings and returns -1 for unloaded paths.
+			const nameArg = name ? `vim.fn.bufnr("${NvimSocketClient.#luaQuote(name)}")` : "nil";
 			const state = await this.evalLuaJson<NvimBufferState | null>(`
 local function build(bufnr)
   if bufnr == nil or bufnr == -1 then return nil end
@@ -150,10 +153,17 @@ return vim.json.encode(out)
 	/** Apply edits to a buffer by name. */
 	async applyEdits(name: string, edits: NvimBufferEdit[]): Promise<void> {
 		const q = NvimSocketClient.#luaQuote;
+		// JSON.stringify of a string array produces ["a","b"] — invalid Lua
+		// (a bare [ starts a keyed entry and expects `=`). Build each edit as a
+		// proper Lua table with a quoted string array for newLines.
+		const luaArray = (arr: string[]) => `{ ${arr.map((s) => `"${q(s)}"`).join(", ")} }`;
+		const editsLua = edits
+			.map((e) => `{ startLine = ${e.startLine}, endLine = ${e.endLine}, newLines = ${luaArray(e.newLines)} }`)
+			.join(", ");
 		await this.evalLua(`
 local bufnr = vim.fn.bufnr("${q(name)}")
 if bufnr == -1 then error("Buffer not found: ${q(name)}") end
-for _, edit in ipairs(${JSON.stringify(edits)}) do
+for _, edit in ipairs({${editsLua}}) do
   vim.api.nvim_buf_set_lines(bufnr, edit.startLine, edit.endLine, false, edit.newLines)
 end
 `);
@@ -278,31 +288,6 @@ return table.concat(results, "\\n")
 `);
 	}
 
-	/** Execute a command in nvim's built-in terminal. */
-	async execTerminal(command: string, cwd: string): Promise<{ output: string; exitCode: number }> {
-		const q = NvimSocketClient.#luaQuote;
-		const result = await this.evalLua(`
-local output = {}
-local exitCode = 0
-local job = vim.fn.jobstart("${q(command)}", {
-  cwd = "${q(cwd)}",
-  on_stdout = function(_, data) for _, line in ipairs(data or {}) do table.insert(output, line) end end,
-  on_stderr = function(_, data) for _, line in ipairs(data or {}) do table.insert(output, line) end end,
-  on_exit = function(_, code) exitCode = code end,
-  stdout_buffered = true,
-  stderr_buffered = true,
-})
-if job <= 0 then return vim.json.encode({ output = "", exitCode = -1 }) end
-vim.fn.jobwait({job})
-return vim.json.encode({ output = table.concat(output, "\\n"), exitCode = exitCode })
-`);
-		try {
-			return JSON.parse(result) as { output: string; exitCode: number };
-		} catch {
-			return { output: result, exitCode: -1 };
-		}
-	}
-
 	/** Get nvim configuration info. */
 	async getNvimConfig(section: string): Promise<unknown> {
 		switch (section) {
@@ -417,6 +402,40 @@ local function collect_terminals()
   end
   return terms
 end
+local function collect_lsp_clients()
+  local clients = {}
+  for _, c in ipairs(vim.lsp.get_clients()) do
+    local fts = {}
+    local ft_cfg = c.config and c.config.filetypes
+    if type(ft_cfg) == "table" then
+      for _, ft in ipairs(ft_cfg) do table.insert(fts, tostring(ft)) end
+    end
+    table.insert(clients, {
+      name = c.name,
+      root_dir = c.config and c.config.root_dir or "?",
+      filetypes = fts,
+    })
+  end
+  return clients
+end
+local function attach_diagnostics(winfo, b)
+  if not winfo or not b then return end
+  local diags = vim.diagnostic.get(b)
+  local out = {}
+  local diag_limit = 8
+  for _, d in ipairs(diags) do
+    if #out >= diag_limit then break end
+    table.insert(out, {
+      lnum = d.lnum,
+      col = d.col,
+      severity = d.severity,
+      source = d.source or "",
+      message = d.message or "",
+    })
+  end
+  winfo.diagnostics = out
+  winfo.diagnostics_total = #diags
+end
 local mode_names = {
   n = "normal", i = "insert", v = "visual", V = "visual_line",
   ["\\22"] = "visual_block", R = "replace", Rv = "vreplace",
@@ -453,6 +472,9 @@ if alt_win ~= 0 and alt_win ~= cur_win then
 end
 local buffers, modified = collect_listed_buffers()
 local terms = collect_terminals()
+local lsp_clients = collect_lsp_clients()
+attach_diagnostics(active, b)
+if alternate then attach_diagnostics(alternate, vim.api.nvim_win_get_buf(alt_win)) end
 return vim.json.encode({
   mode = mode_names[vim.fn.mode()] or vim.fn.mode(),
   cwd = cwd,
@@ -462,6 +484,7 @@ return vim.json.encode({
   tab_count = vim.fn.tabpagenr('$'),
   active = active,
   alternate = alternate,
+  lsp_clients = lsp_clients,
   terminals = #terms > 0 and terms or vim.NIL,
 })
 `);

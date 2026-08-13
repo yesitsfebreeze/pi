@@ -66,6 +66,22 @@ export interface NvimLspServer {
 	capabilities: string[];
 }
 
+/** One attached LSP client (brief form). */
+export interface NvimLspClient {
+	name: string;
+	root_dir: string;
+	filetypes: string[];
+}
+
+/** One LSP diagnostic entry (brief form). */
+export interface NvimBriefDiagnostic {
+	lnum: number; // 0-indexed
+	col: number; // 0-indexed
+	severity: number; // 1=Error, 2=Warning, 3=Info, 4=Hint
+	source: string;
+	message: string;
+}
+
 /** Options dictionary. */
 export type NvimOptions = Record<string, unknown>;
 
@@ -115,8 +131,11 @@ export interface NvimStateBrief {
 		line: number;
 		col: number;
 		context?: string[];
+		diagnostics?: NvimBriefDiagnostic[];
+		diagnostics_total?: number;
 	};
 	alternate: Omit<NvimStateBrief["active"], never> | null;
+	lsp_clients?: NvimLspClient[];
 	terminals?: Array<{ buf: number; name: string; visible: boolean }>;
 }
 

@@ -13,6 +13,7 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { startTcpServer, type TcpServer } from "../../core/crew/tcp-server.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -84,6 +85,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	// Shutdown request flag
 	let shutdownRequested = false;
+	// TCP server for subagents/remote clients — the same RPC command set over
+	// a localhost socket (see crew/tcp-server.ts). Starts once the session is
+	// rebound; its port is discoverable at `.pi/tcp-port`. Subagents connect
+	// via `connectToParentAgent` and fall back to the walkie-talkie channel.
+	let tcpServer: TcpServer | undefined;
+	let tcpServerStart: Promise<void> | undefined;
 	let shuttingDown = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
@@ -354,6 +361,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribeBackpressure?.();
 		unsubscribe = session.subscribe((event) => {
 			output(toJsonEvent(event));
+			tcpServer?.broadcast(toJsonEvent(event));
 			if (event.type === "agent_settled") {
 				void checkShutdownRequested();
 			}
@@ -734,6 +742,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await runtimeHost.dispose();
 		detachInput();
 		process.stdin.pause();
+		await tcpServerStart;
+		await tcpServer?.close();
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}
@@ -796,6 +806,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			await waitForRawStdoutBackpressure();
 		}
 	};
+
+	// Start the TCP transport — the same command set the stdio loop above
+	// serves, plus real-time event streaming, for subagents and remote clients.
+	// The port lands in `.pi/tcp-port`; failures are non-fatal (walkie-talkie
+	// remains the fallback for crew).
+	tcpServerStart = (async () => {
+		try {
+			tcpServer = await startTcpServer(handleCommand);
+		} catch (err) {
+			// Bind failure or a read-only cwd — the stdio RPC loop is unaffected.
+			output({ type: "tcp_server_error", error: err instanceof Error ? err.message : String(err) });
+		}
+	})();
 
 	const onInputEnd = () => {
 		void shutdown();

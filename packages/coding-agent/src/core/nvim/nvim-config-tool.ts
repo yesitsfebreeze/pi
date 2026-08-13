@@ -5,13 +5,11 @@
  * fzf-lua, etc).
  */
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { ToolDefinition } from "../extensions/types.js";
-import { wrapToolDefinition } from "../tools/tool-definition-wrapper.js";
-import type { NvimSocketClient } from "./nvim-socket-client.js";
-import type { NvimKeymap, NvimLspServer } from "./nvim-transport-types.js";
+import type { ToolDefinition } from "../extensions/types.ts";
+import type { NvimSocketClient } from "./nvim-socket-client.ts";
+import type { NvimKeymap, NvimLspServer } from "./nvim-transport-types.ts";
 
 const nvimConfigSchema = Type.Object({
 	section: Type.Optional(
@@ -25,6 +23,7 @@ export function createNvimConfigTool(client: NvimSocketClient): ToolDefinition<t
 	return {
 		name: "nvim_config",
 		label: "nvim_config",
+		promptSnippet: "Query the running nvim config: keymaps, options, LSP, plugins, search tools",
 		description:
 			"Query the running nvim instance's configuration: keymaps, editor options, " +
 			"LSP servers, loaded plugins, and available search tools (telescope, fzf-lua). " +
@@ -63,7 +62,7 @@ if pcall(require, "fzf-lua") then table.insert(tools, "fzf-lua") end
 if pcall(require, "snacks.picker") then table.insert(tools, "snacks.picker") end
 if pcall(require, "mini.pick") then table.insert(tools, "mini.pick") end
 if vim.fn.exists("*vimgrep") == 1 then table.insert(tools, "vimgrep") end
-return vim.inspect(tools)
+return vim.fn.json_encode(tools)
 `);
 						parts.push(formatSearchToolsSection(result));
 						break;
@@ -88,10 +87,6 @@ return vim.inspect(tools)
 			return new Text(theme.fg("toolOutput", output), 0, 0);
 		},
 	};
-}
-
-export function createNvimConfigAgentTool(client: NvimSocketClient): AgentTool<typeof nvimConfigSchema> {
-	return wrapToolDefinition(createNvimConfigTool(client));
 }
 
 function formatKeymapsSection(keymaps: NvimKeymap[] | null): string {

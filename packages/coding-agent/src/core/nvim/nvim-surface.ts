@@ -11,12 +11,10 @@
  * standard `edit` tool (rejects multi-match).
  */
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { ToolDefinition } from "../extensions/types.js";
-import { wrapToolDefinition } from "../tools/tool-definition-wrapper.js";
-import type { NvimSocketClient } from "./nvim-socket-client.js";
+import type { ToolDefinition } from "../extensions/types.ts";
+import type { NvimSocketClient } from "./nvim-socket-client.ts";
 
 const textOut = (result: any) =>
 	result?.content
@@ -32,13 +30,25 @@ function title(theme: any, name: string, rest = "") {
 	return new Text(`${theme.fg("toolTitle", theme.bold(name))}${rest ? ` ${rest}` : ""}`, 0, 0);
 }
 
+/**
+ * Shared system-prompt guidelines for nvim mode. Attached to the always-active
+ * nvim_state tool so they land in the built system prompt's Guidelines section
+ * (the model otherwise only sees nvim tools as function schemas and defaults
+ * to bash for file work).
+ */
+export const nvimPromptGuidelines = [
+	"nvim is connected. All file operations — read, write, edit, grep, find, ls — are forwarded through nvim so you see exactly what the user sees. Prefer the nvim-native tools (nvim_state, nvim_read_buf, nvim_find_replace, nvim_search, nvim_find_files, buffers, and the LSP tools) over bash for reading, searching, and editing files.",
+	"bash runs on pi's local executor (not through nvim): it behaves exactly as without nvim — POSIX shell, timeouts, abort, env all work — and it never blocks the editor. Use it freely for builds, tests, and git.",
+	"Never launch nvim/vim/vi from bash to open a file — you already control the running nvim instance. Use nvim_read_buf to read a buffer and nvim_find_replace/nvim_exec/nvim_keys to edit it.",
+];
+
 // ── nvim_state ──────────────────────────────────────────────────────────────
 
 const nvimStateSchema = Type.Object({
 	level: Type.Optional(
 		Type.String({
 			description:
-				"'brief' (default) — cheap every-turn snapshot: mode, cwd, listed+modified buffers, terminals, active + alternate window with context lines. 'full' — every window with folds, visual selection, marks, diagnostics summary, indent.",
+				"'brief' (default) — cheap every-turn snapshot: mode, cwd, LSP clients, listed+modified buffers, terminals, active + alternate window with context lines and diagnostics. 'full' — every window with folds, visual selection, marks, diagnostics summary, indent.",
 		}),
 	),
 	context_lines: Type.Optional(
@@ -54,12 +64,23 @@ function formatStateBrief(s: any): string {
 	lines.push(`tab ${s.current_tab}/${s.tab_count}`);
 	if (s.modified_buffers?.length) lines.push(`modified: ${s.modified_buffers.join(", ")}`);
 	lines.push(`buffers (${s.buffers?.length ?? 0}): ${(s.buffers ?? []).join(", ")}`);
+	if (s.lsp_clients?.length) {
+		lines.push(`lsp: ${s.lsp_clients.map((c: any) => `${c.name}(${c.filetypes?.join(",") || "?"})`).join(", ")}`);
+	} else {
+		lines.push("lsp: none (no language server attached)");
+	}
 	const a = s.active;
 	if (a) {
 		lines.push(
 			`\n[active] ${a.file}:${a.line}:${a.col} (${a.filetype || "?"}, ${a.total_lines} lines${a.modified ? ", modified" : ""}, ${a.buftype})`,
 		);
 		if (a.context) lines.push(a.context.join("\n"));
+		const ad = a.diagnostics;
+		if (ad?.length) {
+			const sev = (s: number) => ({ 1: "E", 2: "W", 3: "I", 4: "H" })[s] ?? "?";
+			lines.push(`diagnostics (${a.diagnostics_total ?? ad.length}):`);
+			for (const d of ad) lines.push(`  ${sev(d.severity)} ${d.source}:${d.lnum + 1}:${d.col + 1}  ${d.message}`);
+		}
 	}
 	const alt = s.alternate;
 	if (alt) {
@@ -67,6 +88,12 @@ function formatStateBrief(s: any): string {
 			`\n[alternate] ${alt.file}:${alt.line}:${alt.col} (${alt.filetype || "?"}, ${alt.total_lines} lines${alt.modified ? ", modified" : ""})`,
 		);
 		if (alt.context) lines.push(alt.context.join("\n"));
+		const altd = alt.diagnostics;
+		if (altd?.length) {
+			const sev = (s: number) => ({ 1: "E", 2: "W", 3: "I", 4: "H" })[s] ?? "?";
+			lines.push(`diagnostics (${alt.diagnostics_total ?? altd.length}):`);
+			for (const d of altd) lines.push(`  ${sev(d.severity)} ${d.source}:${d.lnum + 1}:${d.col + 1}  ${d.message}`);
+		}
 	}
 	if (s.terminals?.length) {
 		lines.push(
@@ -109,8 +136,10 @@ export function createNvimStateTool(client: NvimSocketClient): ToolDefinition<ty
 	return {
 		name: "nvim_state",
 		label: "nvim state",
+		promptSnippet: "Snapshot the whole nvim session: mode, cwd, buffers, LSP clients, diagnostics, windows, cursor",
+		promptGuidelines: nvimPromptGuidelines,
 		description:
-			"Snapshot the whole nvim session: mode, cwd, every open buffer, every window, cursor, folds, visual selection, marks, diagnostics summary. Use 'brief' (default) for a cheap every-turn view; 'full' for every window with folds/marks/diagnostics.",
+			"Snapshot the whole nvim session: mode, cwd, every open buffer, LSP clients, diagnostics, every window, cursor, folds, visual selection, marks. Use 'brief' (default) for a cheap every-turn view with LSP clients + active-buffer diagnostics; 'full' for every window with folds/marks/diagnostics summary.",
 		parameters: nvimStateSchema,
 		async execute(_id, args, _signal) {
 			const level = args.level === "full" ? "full" : "brief";
@@ -135,10 +164,6 @@ export function createNvimStateTool(client: NvimSocketClient): ToolDefinition<ty
 	};
 }
 
-export function createNvimStateAgentTool(client: NvimSocketClient): AgentTool<typeof nvimStateSchema> {
-	return wrapToolDefinition(createNvimStateTool(client));
-}
-
 // ── nvim_read_buf ────────────────────────────────────────────────────────────
 
 const nvimReadBufSchema = Type.Object({
@@ -151,6 +176,7 @@ export function createNvimReadBufTool(client: NvimSocketClient): ToolDefinition<
 	return {
 		name: "nvim_read_buf",
 		label: "nvim read buf",
+		promptSnippet: "Read any nvim buffer (whole or line range) with line numbers",
 		description: "Read any nvim buffer (not just the current one), whole or by line range, with line numbers.",
 		parameters: nvimReadBufSchema,
 		async execute(_id, { path, start_line, end_line }, _signal) {
@@ -170,10 +196,6 @@ export function createNvimReadBufTool(client: NvimSocketClient): ToolDefinition<
 	};
 }
 
-export function createNvimReadBufAgentTool(client: NvimSocketClient): AgentTool<typeof nvimReadBufSchema> {
-	return wrapToolDefinition(createNvimReadBufTool(client));
-}
-
 // ── nvim_find_replace ───────────────────────────────────────────────────────
 
 const nvimFindReplaceSchema = Type.Object({
@@ -186,6 +208,7 @@ export function createNvimFindReplaceTool(client: NvimSocketClient): ToolDefinit
 	return {
 		name: "nvim_find_replace",
 		label: "nvim find replace",
+		promptSnippet: "Find-and-replace a unique string in any live nvim buffer",
 		description:
 			"Find-and-replace an exact, unique string in any nvim buffer (edits the live buffer, not disk). Rejects multi-match — add surrounding context to make old_string unique. Full undo support.",
 		parameters: nvimFindReplaceSchema,
@@ -210,10 +233,6 @@ export function createNvimFindReplaceTool(client: NvimSocketClient): ToolDefinit
 	};
 }
 
-export function createNvimFindReplaceAgentTool(client: NvimSocketClient): AgentTool<typeof nvimFindReplaceSchema> {
-	return wrapToolDefinition(createNvimFindReplaceTool(client));
-}
-
 // ── nvim_keys ──────────────────────────────────────────────────────────────
 
 const nvimKeysSchema = Type.Object({
@@ -227,6 +246,7 @@ export function createNvimKeysTool(client: NvimSocketClient): ToolDefinition<typ
 	return {
 		name: "nvim_keys",
 		label: "nvim keys",
+		promptSnippet: "Send keystrokes to nvim (cursor, insert mode, mappings)",
 		description:
 			"Send raw keystrokes to nvim to drive the cursor, enter insert mode, trigger mappings, etc. Escape is auto-prepended. Use for interactive editing; use nvim_find_replace/nvim_exec for precise edits.",
 		parameters: nvimKeysSchema,
@@ -239,10 +259,6 @@ export function createNvimKeysTool(client: NvimSocketClient): ToolDefinition<typ
 		},
 		renderResult: renderText,
 	};
-}
-
-export function createNvimKeysAgentTool(client: NvimSocketClient): AgentTool<typeof nvimKeysSchema> {
-	return wrapToolDefinition(createNvimKeysTool(client));
 }
 
 // ── nvim_terminal_send ──────────────────────────────────────────────────────
@@ -266,6 +282,7 @@ export function createNvimTerminalSendTool(client: NvimSocketClient): ToolDefini
 	return {
 		name: "nvim_terminal_send",
 		label: "nvim terminal send",
+		promptSnippet: "Type text into a nvim terminal buffer's running program",
 		description:
 			"Type text into an existing nvim terminal buffer's running program via its job channel (no focus/mode change). Lets you drive a shell or a sibling agent living in a nvim terminal. submit=true runs it.",
 		parameters: nvimTerminalSendSchema,
@@ -285,10 +302,6 @@ export function createNvimTerminalSendTool(client: NvimSocketClient): ToolDefini
 	};
 }
 
-export function createNvimTerminalSendAgentTool(client: NvimSocketClient): AgentTool<typeof nvimTerminalSendSchema> {
-	return wrapToolDefinition(createNvimTerminalSendTool(client));
-}
-
 // ── nvim_highlight ──────────────────────────────────────────────────────────
 
 const nvimHighlightSchema = Type.Object({
@@ -302,6 +315,7 @@ export function createNvimHighlightTool(client: NvimSocketClient): ToolDefinitio
 	return {
 		name: "nvim_highlight",
 		label: "nvim highlight",
+		promptSnippet: "Highlight a line range in a buffer (non-destructive extmarks)",
 		description:
 			"Highlight a line range in a buffer with a color. Uses extmarks under the 'pi_highlight' namespace — never touches real buffer content or disk. Clear with nvim_highlight_clear.",
 		parameters: nvimHighlightSchema,
@@ -319,10 +333,6 @@ export function createNvimHighlightTool(client: NvimSocketClient): ToolDefinitio
 	};
 }
 
-export function createNvimHighlightAgentTool(client: NvimSocketClient): AgentTool<typeof nvimHighlightSchema> {
-	return wrapToolDefinition(createNvimHighlightTool(client));
-}
-
 // ── nvim_highlight_clear ────────────────────────────────────────────────────
 
 const nvimHighlightClearSchema = Type.Object({
@@ -335,6 +345,7 @@ export function createNvimHighlightClearTool(
 	return {
 		name: "nvim_highlight_clear",
 		label: "nvim highlight clear",
+		promptSnippet: "Clear pi highlights from a buffer (or all buffers)",
 		description: "Clear pi highlights from a buffer (or all buffers if path is omitted).",
 		parameters: nvimHighlightClearSchema,
 		async execute(_id, { path }, _signal) {
@@ -351,12 +362,6 @@ export function createNvimHighlightClearTool(
 	};
 }
 
-export function createNvimHighlightClearAgentTool(
-	client: NvimSocketClient,
-): AgentTool<typeof nvimHighlightClearSchema> {
-	return wrapToolDefinition(createNvimHighlightClearTool(client));
-}
-
 // ── nvim_virtual_text ───────────────────────────────────────────────────────
 
 const nvimVirtualTextSchema = Type.Object({
@@ -371,6 +376,7 @@ export function createNvimVirtualTextTool(client: NvimSocketClient): ToolDefinit
 	return {
 		name: "nvim_virtual_text",
 		label: "nvim virtual text",
+		promptSnippet: "Attach virtual-text annotations to a buffer line",
 		description:
 			"Attach a virtual-text annotation to a buffer line (eol/above/below). Visual only — never touches real content or disk. Clear with nvim_virtual_text_clear.",
 		parameters: nvimVirtualTextSchema,
@@ -388,10 +394,6 @@ export function createNvimVirtualTextTool(client: NvimSocketClient): ToolDefinit
 	};
 }
 
-export function createNvimVirtualTextAgentTool(client: NvimSocketClient): AgentTool<typeof nvimVirtualTextSchema> {
-	return wrapToolDefinition(createNvimVirtualTextTool(client));
-}
-
 // ── nvim_virtual_text_clear ────────────────────────────────────────────────
 
 const nvimVirtualTextClearSchema = Type.Object({
@@ -404,6 +406,7 @@ export function createNvimVirtualTextClearTool(
 	return {
 		name: "nvim_virtual_text_clear",
 		label: "nvim virtual text clear",
+		promptSnippet: "Clear pi virtual text from a buffer (or all buffers)",
 		description: "Clear pi virtual text from a buffer (or all buffers if path is omitted).",
 		parameters: nvimVirtualTextClearSchema,
 		async execute(_id, { path }, _signal) {
@@ -422,12 +425,6 @@ export function createNvimVirtualTextClearTool(
 	};
 }
 
-export function createNvimVirtualTextClearAgentTool(
-	client: NvimSocketClient,
-): AgentTool<typeof nvimVirtualTextClearSchema> {
-	return wrapToolDefinition(createNvimVirtualTextClearTool(client));
-}
-
 // ── aggregate ──────────────────────────────────────────────────────────────
 
 export function createNvimSurfaceToolDefinitions(client: NvimSocketClient): ToolDefinition[] {
@@ -441,19 +438,5 @@ export function createNvimSurfaceToolDefinitions(client: NvimSocketClient): Tool
 		createNvimHighlightClearTool(client),
 		createNvimVirtualTextTool(client),
 		createNvimVirtualTextClearTool(client),
-	];
-}
-
-export function createNvimSurfaceAgentTools(client: NvimSocketClient): AgentTool<any>[] {
-	return [
-		createNvimStateAgentTool(client),
-		createNvimReadBufAgentTool(client),
-		createNvimFindReplaceAgentTool(client),
-		createNvimKeysAgentTool(client),
-		createNvimTerminalSendAgentTool(client),
-		createNvimHighlightAgentTool(client),
-		createNvimHighlightClearAgentTool(client),
-		createNvimVirtualTextAgentTool(client),
-		createNvimVirtualTextClearAgentTool(client),
 	];
 }

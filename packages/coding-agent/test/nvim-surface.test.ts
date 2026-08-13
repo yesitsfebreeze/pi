@@ -4,9 +4,10 @@
  * Spawns a real headless `nvim --listen` instance, connects via the real
  * `connectNvim` transport, opens buffers, and verifies:
  *   1. `NvimSocketClient.getStateBrief()` returns a real structured snapshot.
- *   2. The `nvim-surface` inline extension's `before_agent_start` handler
- *      appends a `<auto-injected-context>` block to the system prompt whose
- *      contents match the live nvim state (mode, cwd, buffers, active file).
+ *   2. The `nvim-surface` inline extension's `before_agent_start` handler emits
+ *      an `<auto-injected-context>` block as a change-gated custom message —
+ *      not on the system prompt, which is the cache breakpoint — whose contents
+ *      match the live nvim state (mode, cwd, buffers, active file).
  *   3. The handler skips cleanly when disconnected and for slash commands.
  *
  * Skips the whole suite if `nvim` is not on PATH.
@@ -102,6 +103,9 @@ describe("nvim surface end-to-end", { timeout: 60_000 }, () => {
 		expect(brief!.active?.file.endsWith("b.ts")).toBe(true);
 		expect(brief!.active?.line).toBe(1);
 		expect(brief!.active?.total_lines).toBe(2);
+		// LSP state is native to the snapshot: no server attached in headless nvim.
+		expect(brief!.lsp_clients, "getStateBrief must return lsp_clients").toBeDefined();
+		expect(brief!.lsp_clients).toEqual([]);
 	});
 
 	itOrSkip("extension injects live surface into system prompt", async () => {
@@ -115,8 +119,8 @@ describe("nvim surface end-to-end", { timeout: 60_000 }, () => {
 		// Capture the before_agent_start handler via a fake `pi`.
 		let captured: BeforeAgentStartHandler | undefined;
 		const fakePi = {
-			on(_event: string, handler: BeforeAgentStartHandler) {
-				captured = handler;
+			on(event: string, handler: BeforeAgentStartHandler) {
+				if (event === "before_agent_start") captured = handler;
 			},
 		} as unknown as ExtensionAPI;
 
@@ -130,21 +134,27 @@ describe("nvim surface end-to-end", { timeout: 60_000 }, () => {
 			prompt: "what file is open?",
 			systemPrompt: "BASE",
 		});
-		expect(result?.systemPrompt, "must return a systemPrompt").toBeDefined();
-		const prompt = result!.systemPrompt!;
-		expect(prompt.startsWith("BASE\n")).toBe(true);
+		// The surface rides a custom message, NOT the system prompt: it changes
+		// every turn, and the system prompt is the cache breakpoint.
+		expect(result?.systemPrompt, "must not touch the system prompt").toBeUndefined();
+		const message = (result as { message?: { customType?: string; content?: Array<{ text?: string }> } } | undefined)
+			?.message;
+		expect(message?.customType, "must emit an nvim-surface custom message").toBe("nvim-surface");
+		const prompt = message?.content?.map((c) => c.text ?? "").join("\n") ?? "";
 		expect(prompt).toContain("<auto-injected-context>");
 		expect(prompt).toContain("nvim surface (live snapshot at turn start)");
 		expect(prompt).toContain("mode: normal");
 		expect(prompt).toContain("inject.ts");
+		// LSP state is injected natively (not only via lsp_* tool calls).
+		expect(prompt).toContain("lsp: none");
 	});
 
 	itOrSkip("extension skips when disconnected", async () => {
 		// No nvim started; holder stays undefined.
 		let captured: BeforeAgentStartHandler | undefined;
 		const fakePi = {
-			on(_event: string, handler: BeforeAgentStartHandler) {
-				captured = handler;
+			on(event: string, handler: BeforeAgentStartHandler) {
+				if (event === "before_agent_start") captured = handler;
 			},
 		} as unknown as ExtensionAPI;
 		const ext = createNvimSurfaceExtension();
@@ -163,8 +173,8 @@ describe("nvim surface end-to-end", { timeout: 60_000 }, () => {
 
 		let captured: BeforeAgentStartHandler | undefined;
 		const fakePi = {
-			on(_event: string, handler: BeforeAgentStartHandler) {
-				captured = handler;
+			on(event: string, handler: BeforeAgentStartHandler) {
+				if (event === "before_agent_start") captured = handler;
 			},
 		} as unknown as ExtensionAPI;
 		const ext = createNvimSurfaceExtension();

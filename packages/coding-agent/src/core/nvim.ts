@@ -12,37 +12,40 @@
  */
 
 import { execFile } from "node:child_process";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { statSync, unlinkSync } from "node:fs";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { errorMessage } from "../utils/error.js";
-import type { ToolDefinition } from "./extensions/types.js";
-import { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
-import { NvimSocketClient } from "./nvim/nvim-socket-client.js";
-import { createNvimAgentTools, createNvimToolDefinitions } from "./nvim/nvim-tools.js";
-import type { NvimBufferEdit, NvimBufferState } from "./nvim/nvim-transport-types.js";
-import { wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
+import { errorMessage } from "../utils/error.ts";
+import type { ToolDefinition } from "./extensions/types.ts";
+import {
+	diffConfigFiles,
+	listNotes,
+	readNote,
+	recordSeen,
+	setNvimLearningRoot,
+	writeNote,
+} from "./nvim/nvim-learning.ts";
+import { createNvimOps, type NvimOps } from "./nvim/nvim-ops.ts";
+import { NvimSocketClient } from "./nvim/nvim-socket-client.ts";
+import type { NvimBufferEdit, NvimBufferState } from "./nvim/nvim-transport-types.ts";
 
-export { createNvimOps, type NvimOps } from "./nvim/nvim-ops.js";
+export { diffConfigFiles, recordSeen, setNvimLearningRoot };
+export { createNvimOps, type NvimOps } from "./nvim/nvim-ops.ts";
 // Re-export for consumers
-export { NvimSocketClient } from "./nvim/nvim-socket-client.js";
-export {
-	createNvimSurfaceAgentTools,
-	createNvimSurfaceToolDefinitions,
-} from "./nvim/nvim-surface.js";
+export { NvimSocketClient } from "./nvim/nvim-socket-client.ts";
+export { createNvimSurfaceToolDefinitions } from "./nvim/nvim-surface.ts";
 export {
 	createBuffersTool,
 	createLspDefinitionTool,
 	createLspDiagnosticsTool,
 	createLspHoverTool,
 	createLspReferencesTool,
-	createNvimAgentTools,
 	createNvimConfigTool,
 	createNvimFindFilesTool,
 	createNvimSearchTool,
 	createNvimToolDefinitions,
 	createTsQueryTool,
-} from "./nvim/nvim-tools.js";
+} from "./nvim/nvim-tools.ts";
 export type { NvimBufferState, NvimBufferEdit };
 
 /** Escape a string for embedding inside a Vim double-quoted luaeval argument. */
@@ -163,7 +166,6 @@ async function waitForSocketFile(socketPath: string): Promise<void> {
 function cleanupStaleSocket(socketPath: string): void {
 	if (!socketPath.startsWith("/tmp/") || !socketPath.includes("nvim")) return;
 	try {
-		const { statSync, unlinkSync } = require("node:fs") as typeof import("node:fs");
 		const st = statSync(socketPath);
 		if (st.isSocket() || st.size === 0) unlinkSync(socketPath);
 	} catch {
@@ -323,11 +325,12 @@ return table.concat(parts, "\\n")
 const renderCall = () => new Text("", 0, 0);
 const renderResult = (result: any) => new Text(result?.content?.map((c: any) => c.text ?? "").join("\n") ?? "", 0, 0);
 
-function basicNvimToolDefs(exec: NvimExec): ToolDefinition[] {
+export function nvimBasicToolDefinitions(exec: NvimExec): ToolDefinition[] {
 	return [
 		{
 			name: "nvim_exec",
 			label: "nvim exec",
+			promptSnippet: "Execute an nvim Ex command (windows, buffers, tabs)",
 			description:
 				"Execute a nvim Ex command (e.g. 'split file.lua', 'terminal', 'buffer 3', 'vsplit'). Controls nvim windows, buffers, tabs.",
 			parameters: Type.Object({
@@ -346,6 +349,7 @@ function basicNvimToolDefs(exec: NvimExec): ToolDefinition[] {
 		{
 			name: "nvim_lua",
 			label: "nvim Lua",
+			promptSnippet: "Evaluate Lua in nvim and return the result",
 			description:
 				"Execute Lua in nvim and return the result. Use for reading state: buffers, keymaps, LSP, plugins, window layout, etc. Example: nvim_lua({ code: 'return vim.inspect(vim.api.nvim_list_bufs())' })",
 			parameters: Type.Object({
@@ -366,22 +370,184 @@ function basicNvimToolDefs(exec: NvimExec): ToolDefinition[] {
 
 // ─── Tool creation ─────────────────────────────────────────────────────────
 
-/**
- * Get the basic nvim control tools (nvim_exec, nvim_lua).
- * These are always available when nvim is connected, regardless of
- * whether the pi plugin is installed.
- */
-export function nvimTools(exec: NvimExec): AgentTool[] {
-	return basicNvimToolDefs(exec).map((d) => wrapToolDefinition(d));
+// ─── Config learning (persistent + change detection) ───────────────────────
+
+/** List of the user's nvim config files + config dir, read via nvim. */
+export interface NvimConfigFiles {
+	configDir: string;
+	files: string[];
+}
+
+const CONFIG_FILES_LUA = `
+local configdir = vim.fn.stdpath('config')
+local files = {}
+local function addf(p)
+  if vim.fn.filereadable(p) == 1 then table.insert(files, p) end
+end
+addf(configdir .. '/init.lua')
+addf(configdir .. '/init.vim')
+for _, pdir in ipairs({'/lua/plugins', '/lua/plugin'}) do
+  local ppath = configdir .. pdir
+  if vim.fn.isdirectory(ppath) == 1 then
+    for _, entry in ipairs(vim.fn.readdir(ppath) or {}) do
+      if entry:match('%.lua$') then addf(ppath .. '/' .. entry) end
+    end
+  end
+end
+local cdir = configdir .. '/lua/config'
+if vim.fn.isdirectory(cdir) == 1 then
+  for _, entry in ipairs(vim.fn.readdir(cdir) or {}) do
+    if entry:match('%.lua$') then addf(cdir .. '/' .. entry) end
+  end
+end
+return vim.fn.json_encode({ configdir = configdir, files = files })
+`;
+
+/** Query nvim for its config dir and the list of config files to fingerprint. */
+export async function getNvimConfigFiles(exec: NvimExec): Promise<NvimConfigFiles> {
+	try {
+		const raw = await exec(CONFIG_FILES_LUA);
+		const parsed = JSON.parse(raw);
+		return { configDir: parsed.configdir ?? "", files: parsed.files ?? [] };
+	} catch {
+		return { configDir: "", files: [] };
+	}
 }
 
 /**
- * Get all nvim-native tools (LSP, treesitter, config, search, find files).
- * These require the NvimSocketClient (backed by `nvim --server --remote-expr`,
- * works with any `nvim --listen` instance).
+ * Diff the user's nvim config files against the persisted manifest, record
+ * the new fingerprints, and return a one-line summary of what changed (or ""
+ * when nothing changed). Content-hash based, so untouched files are skipped
+ * and edits that preserve mtime are still caught.
  */
-export function nvimNativeAgentTools(cwd: string, client: NvimSocketClient): AgentTool[] {
-	return createNvimAgentTools(cwd, client);
+export async function learnNvimConfigChanges(exec: NvimExec): Promise<string> {
+	const { files } = await getNvimConfigFiles(exec);
+	if (files.length === 0) return "";
+
+	const diff = diffConfigFiles(files);
+	recordSeen(files);
+
+	const parts: string[] = [];
+	if (diff.new.length > 0) parts.push(`${diff.new.length} new`);
+	if (diff.changed.length > 0) parts.push(`${diff.changed.length} changed`);
+	if (diff.removed.length > 0) parts.push(`${diff.removed.length} removed`);
+	if (parts.length === 0) return "";
+
+	const names = [...diff.new, ...diff.changed].map((p) => p.split("/").pop());
+	const nameList = names.length > 0 ? ` (${names.join(", ")})` : "";
+	return `nvim config ${parts.join(", ")} since last session${nameList} — ${diff.unchanged.length} unchanged.`;
+}
+
+// ─── nvim_learn tool ────────────────────────────────────────────────────────
+
+const nvimLearnSchema = Type.Object({
+	action: Type.Union([
+		Type.Literal("diff"),
+		Type.Literal("record"),
+		Type.Literal("note_list"),
+		Type.Literal("note_read"),
+		Type.Literal("note_write"),
+	]),
+	name: Type.Optional(Type.String({ description: "Note name for note_read/note_write (e.g. 'keymaps')." })),
+	content: Type.Optional(Type.String({ description: "Markdown content for note_write." })),
+});
+
+/**
+ * Create the nvim_learn tool — the agent's persistent memory for the user's
+ * nvim setup. `diff` reports which config files changed vs the last session
+ * (content-hash); `record` marks them seen; note_* read/write learned notes
+ * under .pi/nvim/notes/.
+ */
+export function createNvimLearnTool(root: string, exec: NvimExec): ToolDefinition<typeof nvimLearnSchema> {
+	return {
+		name: "nvim_learn",
+		label: "nvim learn",
+		promptSnippet: "Persistent nvim knowledge: diff config changes, read/write learned notes",
+		description:
+			"The agent's persistent memory for the user's nvim setup (stored under .pi/nvim/). " +
+			"action 'diff' reports which config files changed since the last session (content-hash based); " +
+			"'record' marks current config as seen; 'note_list'/'note_read'/'note_write' manage learned notes " +
+			"(keymaps, plugins, LSP, options, gotchas).",
+		parameters: nvimLearnSchema,
+		async execute(_id, { action, name, content }, _signal) {
+			setNvimLearningRoot(root);
+			switch (action) {
+				case "diff": {
+					const { files } = await getNvimConfigFiles(exec);
+					if (files.length === 0)
+						return {
+							content: [{ type: "text" as const, text: "No nvim config files found." }],
+							details: undefined,
+						};
+					const diff = diffConfigFiles(files);
+					const lines = [
+						`new (${diff.new.length}):`,
+						...diff.new.map((p) => `  ${p}`),
+						`changed (${diff.changed.length}):`,
+						...diff.changed.map((p) => `  ${p}`),
+						`unchanged (${diff.unchanged.length})`,
+						`removed (${diff.removed.length}):`,
+						...diff.removed.map((p) => `  ${p}`),
+					];
+					return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
+				}
+				case "record": {
+					const { files } = await getNvimConfigFiles(exec);
+					recordSeen(files);
+					return {
+						content: [{ type: "text" as const, text: `Recorded fingerprints for ${files.length} config files.` }],
+						details: undefined,
+					};
+				}
+				case "note_list": {
+					const notes = listNotes();
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: notes.length > 0 ? notes.join("\n") : "(no notes yet)",
+							},
+						],
+						details: undefined,
+					};
+				}
+				case "note_read": {
+					if (!name)
+						return {
+							content: [{ type: "text" as const, text: "note_read requires a note name." }],
+							details: undefined,
+						};
+					const text = readNote(name);
+					return {
+						content: [{ type: "text" as const, text: text ?? `(no note named '${name}')` }],
+						details: undefined,
+					};
+				}
+				case "note_write": {
+					if (!name || content === undefined)
+						return {
+							content: [{ type: "text" as const, text: "note_write requires a name and content." }],
+							details: undefined,
+						};
+					writeNote(name, content);
+					return {
+						content: [{ type: "text" as const, text: `Saved note '${name}'.` }],
+						details: undefined,
+					};
+				}
+			}
+		},
+		renderCall(args, theme, _context) {
+			return new Text(`${theme.fg("toolTitle", theme.bold("nvim_learn"))} ${args.action}`, 0, 0);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c: any) => c.type === "text")
+				.map((c: any) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
 }
 
 /**

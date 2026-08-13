@@ -5,7 +5,6 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -48,7 +47,15 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { setNvimSurfaceClient } from "./core/nvim/nvim-surface-context.ts";
-import { connectNvim, createNvimToolDefinitions, discoverNvim, nvimToolOps } from "./core/nvim.ts";
+import {
+	connectNvim,
+	createNvimLearnTool,
+	createNvimToolDefinitions,
+	learnNvimConfigChanges,
+	nvimBasicToolDefinitions,
+	nvimToolOps,
+	setNvimLearningRoot,
+} from "./core/nvim.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -790,6 +797,10 @@ export async function main(args: string[], options?: MainOptions) {
 				type: "error" as const,
 				message: `Failed to load extension "${path}": ${error}`,
 			})),
+			...resourceLoader.getExtensions().warnings.map(({ path, error }) => ({
+				type: "warning" as const,
+				message: `Extension conflict "${path}": ${error}`,
+			})),
 		];
 
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
@@ -931,14 +942,17 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		try {
 			const conn = await connectNvim(parsed.nvimSocket);
-			const { client, exec, ops } = conn;
+			const { client, exec } = conn;
 
 			// Publish the live client so the nvim-surface inline extension can
 			// inject a snapshot of every buffer/window into context each turn.
 			setNvimSurfaceClient(client);
 
-			// Override standard tools with nvim-backed operations.
-			const toolNames = ["read", "write", "edit", "grep", "find", "ls", "bash"] as const;
+			// Override standard file tools with nvim-backed operations.
+			// bash is deliberately NOT forwarded: the nvim path runs through
+			// &shell (breaks POSIX idioms for nushell users), ignores
+			// timeout/signal/env, and blocks nvim's event loop via jobwait.
+			const toolNames = ["read", "write", "edit", "grep", "find", "ls"] as const;
 			const nvimOps = nvimToolOps(() => (client.connected ? client : undefined));
 			for (const name of toolNames) {
 				const options: Record<string, unknown> = {};
@@ -961,9 +975,6 @@ export async function main(args: string[], options?: MainOptions) {
 					case "ls":
 						options.ls = { operations: nvimOps.ls };
 						break;
-					case "bash":
-						options.bash = { operations: nvimOps.bash };
-						break;
 				}
 				const def = createToolDefinition(name, process.cwd(), options as any);
 				session.registerAdditionalTool(def);
@@ -974,9 +985,21 @@ export async function main(args: string[], options?: MainOptions) {
 				session.registerAdditionalTool(tool);
 			}
 
+			// Register the direct-control tools (nvim_exec, nvim_lua).
+			for (const tool of nvimBasicToolDefinitions(exec)) {
+				session.registerAdditionalTool(tool);
+			}
+
+			// Register the config-learning tool (persistent notes + change detection).
+			session.registerAdditionalTool(createNvimLearnTool(process.cwd(), exec));
+
+			// Fingerprint the user's nvim config and log what changed vs last session.
 			try {
-				session.setSystemPrompt(await discoverNvim(exec));
+				setNvimLearningRoot(process.cwd());
+				const changes = await learnNvimConfigChanges(exec);
+				if (changes) console.log(`[nvim] ${changes}`);
 			} catch {}
+
 			console.log(`[nvim] Connected to ${parsed.nvimSocket}`);
 		} catch (e) {
 			setNvimSurfaceClient(undefined);

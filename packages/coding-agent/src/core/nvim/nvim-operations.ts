@@ -2,12 +2,18 @@
  * Nvim-backed Operations implementations.
  *
  * These implement ReadOperations, EditOperations, WriteOperations,
- * BashOperations, FindOperations, GrepOperations, LsOperations using the
- * nvim socket client instead of direct filesystem access.
+ * FindOperations, GrepOperations, LsOperations using the nvim socket client
+ * instead of direct filesystem access.
  *
  * Accept a lazy client getter so tools can be created before the socket
  * connects. Each operation checks at call time whether the client is
  * connected; if not, it falls back to a local filesystem path or throws.
+ *
+ * Buffer lookup goes through `getBufferState(path)` — which resolves the path
+ * via `vim.fn.bufnr()` — never by string-matching `getBuffers()` names:
+ * nvim reports the *resolved* path (e.g. /private/tmp/… for a /tmp symlink)
+ * while callers pass the path as given, so name equality silently misses
+ * open buffers.
  *
  * Read operations: reads buffer content directly from nvim (always in sync).
  * Write operations: writes content to nvim buffer AND saves to disk.
@@ -16,15 +22,21 @@
  */
 
 import { constants } from "node:fs";
-import { access as fsAccess, mkdir as fsMkdir } from "node:fs/promises";
-import type { BashOperations } from "../tools/bash.js";
-import type { EditOperations } from "../tools/edit.js";
-import type { FindOperations } from "../tools/find.js";
-import type { GrepOperations } from "../tools/grep.js";
-import type { LsOperations } from "../tools/ls.js";
-import type { ReadOperations } from "../tools/read.js";
-import type { WriteOperations } from "../tools/write.js";
-import type { NvimSocketClient } from "./nvim-socket-client.js";
+import {
+	access as fsAccess,
+	mkdir as fsMkdir,
+	readFile as fsReadFile,
+	readdir,
+	stat,
+	writeFile,
+} from "node:fs/promises";
+import type { EditOperations } from "../tools/edit.ts";
+import type { FindOperations } from "../tools/find.ts";
+import type { GrepOperations } from "../tools/grep.ts";
+import type { LsOperations } from "../tools/ls.ts";
+import type { ReadOperations } from "../tools/read.ts";
+import type { WriteOperations } from "../tools/write.ts";
+import type { NvimSocketClient } from "./nvim-socket-client.ts";
 
 type ClientGetter = () => NvimSocketClient | undefined;
 
@@ -37,19 +49,26 @@ export function createNvimReadOps(getClient: ClientGetter): ReadOperations {
 			if (client) {
 				const state = await client.getBufferState(absolutePath);
 				if (state) return Buffer.from(state.content, "utf-8");
-				// Buffer not loaded: open it, read, then restore state
-				await client.evalLua(`vim.cmd("silent! edit ${absolutePath.replace(/ /g, "\\ ")}")`);
-				const newState = await client.getBufferState();
+				// Buffer not loaded: load it into a hidden buffer via bufadd/bufload.
+				// Unlike `silent! edit`, this never touches the current window or the
+				// visible layout, and bufadd is path-based so it cannot return the
+				// wrong buffer.
+				await client.evalLua(`
+local bufnr = vim.fn.bufadd(${JSON.stringify(absolutePath)})
+if bufnr > 0 then vim.fn.bufload(bufnr) end
+`);
+				const newState = await client.getBufferState(absolutePath);
 				if (newState) return Buffer.from(newState.content, "utf-8");
 			}
-			throw new Error(`nvim: cannot read ${absolutePath}`);
+			// Fallback: read from disk so the read tool keeps working even when
+			// nvim cannot load the buffer (special paths, huge files, etc.).
+			return fsReadFile(absolutePath);
 		},
 		access: async (absolutePath: string): Promise<void> => {
 			const client = getClient();
 			if (client) {
-				const buffers = await client.getBuffers();
-				const found = buffers.find((b) => b.name === absolutePath && b.loaded);
-				if (found) return;
+				const state = await client.getBufferState(absolutePath);
+				if (state) return;
 			}
 			// Fallback to filesystem
 			await fsAccess(absolutePath, constants.R_OK);
@@ -67,11 +86,14 @@ export function createNvimEditOps(getClient: ClientGetter): EditOperations {
 			if (client) {
 				const state = await client.getBufferState(absolutePath);
 				if (state) return Buffer.from(state.content, "utf-8");
-				await client.evalLua(`vim.cmd("silent! edit ${absolutePath.replace(/ /g, "\\ ")}")`);
-				const newState = await client.getBufferState();
+				await client.evalLua(`
+local bufnr = vim.fn.bufadd(${JSON.stringify(absolutePath)})
+if bufnr > 0 then vim.fn.bufload(bufnr) end
+`);
+				const newState = await client.getBufferState(absolutePath);
 				if (newState) return Buffer.from(newState.content, "utf-8");
 			}
-			throw new Error(`nvim: cannot read ${absolutePath}`);
+			return fsReadFile(absolutePath);
 		},
 		writeFile: async (absolutePath: string, content: string): Promise<void> => {
 			const client = getClient();
@@ -79,27 +101,22 @@ export function createNvimEditOps(getClient: ClientGetter): EditOperations {
 			const lines = content.split("\n");
 			if (content.endsWith("\n")) lines.pop(); // trailing newline → split creates extra empty line
 
-			// Check if buffer is already open
-			const buffers = await client.getBuffers();
-			const found = buffers.find((b) => b.name === absolutePath && b.loaded);
-
-			if (found) {
-				const state = await client.getBufferState(absolutePath);
-				if (state) {
-					const currentLines = state.content.split("\n");
-					// Replace entire buffer
-					await client.applyEdits(absolutePath, [{ startLine: 0, endLine: currentLines.length, newLines: lines }]);
-				}
+			// Buffer lookup by path (bufnr-resolved); updates the live buffer when
+			// it is open in nvim, and always writes to disk afterwards.
+			const state = await client.getBufferState(absolutePath);
+			if (state) {
+				const currentLines = state.content.split("\n");
+				// Replace entire buffer
+				await client.applyEdits(absolutePath, [{ startLine: 0, endLine: currentLines.length, newLines: lines }]);
 			}
 			// Always also write to disk so the edit tool's contract is fulfilled
-			const { writeFile } = await import("node:fs/promises");
 			await writeFile(absolutePath, content, "utf-8");
 		},
 		access: async (absolutePath: string): Promise<void> => {
 			const client = getClient();
 			if (client) {
-				const buffers = await client.getBuffers();
-				if (buffers.some((b) => b.name === absolutePath && b.loaded)) return;
+				const state = await client.getBufferState(absolutePath);
+				if (state) return;
 			}
 			await fsAccess(absolutePath, constants.R_OK | constants.W_OK);
 		},
@@ -116,52 +133,21 @@ export function createNvimWriteOps(getClient: ClientGetter): WriteOperations {
 				const lines = content.split("\n");
 				if (content.endsWith("\n")) lines.pop();
 
-				const buffers = await client.getBuffers();
-				const found = buffers.find((b) => b.name === absolutePath && b.loaded);
-
-				if (found) {
-					const state = await client.getBufferState(absolutePath);
-					if (state) {
-						await client.applyEdits(absolutePath, [
-							{ startLine: 0, endLine: state.content.split("\n").length, newLines: lines },
-						]);
-					}
+				const state = await client.getBufferState(absolutePath);
+				if (state) {
+					await client.applyEdits(absolutePath, [
+						{ startLine: 0, endLine: state.content.split("\n").length, newLines: lines },
+					]);
 				}
 				// Also write to disk
-				const { writeFile } = await import("node:fs/promises");
 				await writeFile(absolutePath, content, "utf-8");
 				return;
 			}
 			// Fallback: write directly to filesystem
-			const { writeFile } = await import("node:fs/promises");
 			await writeFile(absolutePath, content, "utf-8");
 		},
 		mkdir: async (dir: string): Promise<void> => {
 			await fsMkdir(dir, { recursive: true });
-		},
-	};
-}
-
-// ── Bash ────────────────────────────────────────────────────────────────────
-
-export function createNvimBashOps(getClient: ClientGetter): BashOperations {
-	return {
-		exec: async (
-			command: string,
-			cwd: string,
-			{
-				onData,
-			}: { onData: (chunk: Buffer) => void; signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv },
-		): Promise<{ exitCode: number | null }> => {
-			const client = getClient();
-			if (client) {
-				const result = await client.execTerminal(command, cwd);
-				if (result.output.length > 0) {
-					onData(Buffer.from(result.output, "utf-8"));
-				}
-				return { exitCode: result.exitCode };
-			}
-			throw new Error("nvim: not connected");
 		},
 	};
 }
@@ -173,8 +159,8 @@ export function createNvimFindOps(getClient: ClientGetter): FindOperations {
 		exists: async (absolutePath: string): Promise<boolean> => {
 			const client = getClient();
 			if (client) {
-				const buffers = await client.getBuffers();
-				return buffers.some((b) => b.name === absolutePath && b.loaded);
+				const state = await client.getBufferState(absolutePath);
+				if (state) return true;
 			}
 			// Fallback
 			try {
@@ -187,7 +173,10 @@ export function createNvimFindOps(getClient: ClientGetter): FindOperations {
 		glob: async (
 			pattern: string,
 			searchPath: string,
-			{ ignore, limit }: { ignore: string[]; limit: number },
+			// `ignore` is not honoured on this path: vim.fn.globpath has no exclude
+			// argument, so nvim-backed find returns matches the local backend would
+			// have filtered. Applying the patterns here would need a client-side pass.
+			{ ignore: _ignore, limit }: { ignore: string[]; limit: number },
 		): Promise<string[]> => {
 			const client = getClient();
 			if (client) {
@@ -198,7 +187,7 @@ local results = vim.fn.globpath("${searchPath.replace(/\\/g, "\\\\").replace(/"/
 if #results > ${limit} then
   results = vim.list_slice(results, 1, ${limit})
 end
-return vim.inspect(results)
+return vim.fn.json_encode(results)
 `);
 				try {
 					return JSON.parse(result) as string[];
@@ -217,7 +206,6 @@ export function createNvimGrepOps(getClient: ClientGetter): GrepOperations {
 	return {
 		isDirectory: async (absolutePath: string): Promise<boolean> => {
 			try {
-				const { stat } = await import("node:fs/promises");
 				const s = await stat(absolutePath);
 				return s.isDirectory();
 			} catch {
@@ -242,8 +230,8 @@ export function createNvimLsOps(getClient: ClientGetter): LsOperations {
 		exists: async (absolutePath: string): Promise<boolean> => {
 			const client = getClient();
 			if (client) {
-				const buffers = await client.getBuffers();
-				if (buffers.some((b) => b.name === absolutePath && b.loaded)) return true;
+				const state = await client.getBufferState(absolutePath);
+				if (state) return true;
 			}
 			try {
 				await fsAccess(absolutePath, constants.F_OK);
@@ -255,19 +243,16 @@ export function createNvimLsOps(getClient: ClientGetter): LsOperations {
 		stat: async (absolutePath: string): Promise<{ isDirectory: () => boolean }> => {
 			const client = getClient();
 			if (client) {
-				const buffers = await client.getBuffers();
-				const found = buffers.find((b) => b.name === absolutePath && b.loaded);
-				if (found) return { isDirectory: () => false };
+				const state = await client.getBufferState(absolutePath);
+				if (state) return { isDirectory: () => false };
 			}
 			try {
-				const { stat } = await import("node:fs/promises");
 				return await stat(absolutePath);
 			} catch {
 				throw new Error(`ENOENT: ${absolutePath}`);
 			}
 		},
 		readdir: async (absolutePath: string): Promise<string[]> => {
-			const { readdir } = await import("node:fs/promises");
 			return readdir(absolutePath);
 		},
 	};
