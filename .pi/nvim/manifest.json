@@ -1,0 +1,72 @@
+{
+  "/Users/feb/.config/nvim/init.lua": {
+    "sha256": "029e9a99bd3bd336d23b39a9656003fd03c5d9c6bb5cbcb04be0de83c8a3e76c",
+    "mtimeMs": 1782898410181.9006,
+    "size": 252
+  },
+  "/Users/feb/.config/nvim/lua/plugins/colorscheme.lua": {
+    "sha256": "b8d99ffe9dbd09a6aac61959e24114d4b46c4ed3832798f0d0272fd074cd633e",
+    "mtimeMs": 1783575185841.161,
+    "size": 4003
+  },
+  "/Users/feb/.config/nvim/lua/plugins/completion.lua": {
+    "sha256": "9e6fa6087e89c44185a1ffb05566426328553432b138cd837615dae0630040fd",
+    "mtimeMs": 1785828735825.7166,
+    "size": 1203
+  },
+  "/Users/feb/.config/nvim/lua/plugins/editor.lua": {
+    "sha256": "6d3f9e3dc65ef5f0159e1e85790cbfb40888cb9dd5966ec01334534e19eebacd",
+    "mtimeMs": 1785828735836.9722,
+    "size": 2835
+  },
+  "/Users/feb/.config/nvim/lua/plugins/explorer.lua": {
+    "sha256": "f11e188d6f2ccb77a9da321e0c53cb28fc863259cded9a02984f11b285843cb0",
+    "mtimeMs": 1785828735848.9304,
+    "size": 268
+  },
+  "/Users/feb/.config/nvim/lua/plugins/lsp.lua": {
+    "sha256": "fffe18e644e44ea9244bcf2eadeb1d87f427e0d90c7d05750ec2f9ac882f516b",
+    "mtimeMs": 1786483593965.1768,
+    "size": 2617
+  },
+  "/Users/feb/.config/nvim/lua/plugins/smear_cursor.lua": {
+    "sha256": "3408d7911f153b9cd82f696a3c4f4c37bd9f39147c78b46892a8e9beb7c196a3",
+    "mtimeMs": 1782448443969.6287,
+    "size": 305
+  },
+  "/Users/feb/.config/nvim/lua/plugins/statusline.lua": {
+    "sha256": "65af390ae5390843e446670988dcce8fffa4ea82ca30950b122a36496449f71e",
+    "mtimeMs": 1782073532416.131,
+    "size": 2931
+  },
+  "/Users/feb/.config/nvim/lua/plugins/telescope.lua": {
+    "sha256": "810ef1722546294a6025e335aa8e081e945d2347386f8135f14c1a78e322319f",
+    "mtimeMs": 1785828735862.0642,
+    "size": 2115
+  },
+  "/Users/feb/.config/nvim/lua/plugins/treesitter.lua": {
+    "sha256": "bf74d3434c1730e91333b327324bbe549561c53463439a2c5752123b81c339a0",
+    "mtimeMs": 1785828735876.215,
+    "size": 1124
+  },
+  "/Users/feb/.config/nvim/lua/config/autocmds.lua": {
+    "sha256": "e5b1afef238ada14e41991be9c14549800ed440eeec96607219197f257f23e8d",
+    "mtimeMs": 1782073531712.7734,
+    "size": 1524
+  },
+  "/Users/feb/.config/nvim/lua/config/keymaps.lua": {
+    "sha256": "c1f5909e84177fe63b9ff06e64858b1deb9b0fc985cf50b320b9c5c12e02e12b",
+    "mtimeMs": 1782073531891.317,
+    "size": 4994
+  },
+  "/Users/feb/.config/nvim/lua/config/lazy.lua": {
+    "sha256": "dc778c395b7f7f71b5b6853ab18c78fdbb5ec0fdf6603de0ccbdc13b72e0dd63",
+    "mtimeMs": 1786483013840.5728,
+    "size": 1201
+  },
+  "/Users/feb/.config/nvim/lua/config/options.lua": {
+    "sha256": "7280f9245e25cc25d2937204948076568ecb4c423162bb83c4d885e938b72555",
+    "mtimeMs": 1783575185829.4585,
+    "size": 1173
+  }
+}

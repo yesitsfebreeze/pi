@@ -1,0 +1,36 @@
+# Options (audited)
+- `mouse`: "a"
+- `cmdheight`: 1
+- `signcolumn`: "yes"
+- `relativenumber`: true
+- `textwidth`: 0
+- `virtualedit`: "block"
+- `pumheight`: 10
+- `tabstop`: 2
+- `hlsearch`: false
+- `number`: true
+- `softtabstop`: 2
+- `timeoutlen`: 400
+- `termguicolors`: true
+- `sidescrolloff`: 8
+- `swapfile`: false
+- `clipboard`: "unnamedplus"
+- `incsearch`: true
+- `list`: true
+- `scrolloff`: 999
+- `listchars`: "eol:↵,multispace:·,nbsp:␣,tab:→ ,trail:·"
+- `fillchars`: "eob: "
+- `updatetime`: 500
+- `showmode`: false
+- `splitbelow`: true
+- `undofile`: true
+- `completeopt`: "menu,menuone,noselect"
+- `expandtab`: true
+- `splitright`: true
+- `shiftwidth`: 2
+- `cursorline`: true
+- `wrap`: false
+- `laststatus`: 3
+- `ignorecase`: true
+- `smartcase`: true
+- `backup`: false

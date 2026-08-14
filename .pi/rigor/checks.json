@@ -1,0 +1,40 @@
+{
+  "discovered": [
+    {
+      "name": "repo:test",
+      "cmd": "npm run test",
+      "cwd": ".",
+      "scope": "repo",
+      "kind": "test"
+    },
+    {
+      "name": "repo:check",
+      "cmd": "npm run check",
+      "cwd": ".",
+      "scope": "repo",
+      "kind": "lint"
+    },
+    {
+      "name": "repo:build",
+      "cmd": "npm run build",
+      "cwd": ".",
+      "scope": "repo",
+      "kind": "build"
+    },
+    {
+      "name": "repo:just-test",
+      "cmd": "just test",
+      "cwd": ".",
+      "scope": "repo",
+      "kind": "test"
+    },
+    {
+      "name": "repo:just-check",
+      "cmd": "just check",
+      "cwd": ".",
+      "scope": "repo",
+      "kind": "test"
+    }
+  ],
+  "custom": []
+}
