@@ -89,7 +89,11 @@ import {
 	resolveModelScopeFromModels,
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
-import { setNvimSurfaceClient, setNvimSurfaceNotice } from "../../core/nvim/nvim-surface-context.ts";
+import {
+	isNvimSurfaceConnected,
+	setNvimSurfaceClient,
+	setNvimSurfaceNotice,
+} from "../../core/nvim/nvim-surface-context.ts";
 import {
 	connectNvim,
 	createNvimLearnTool,
@@ -5475,6 +5479,7 @@ export class InteractiveMode {
 			sessionCost: this.cumulativeSessionCost,
 			autoCompact: this.session.autoCompactionEnabled,
 			working: this.workingVisible,
+			nvimConnected: isNvimSurfaceConnected(),
 			extensionStatuses: [...this.extensionStatuses.values()],
 			now: Date.now(),
 		};

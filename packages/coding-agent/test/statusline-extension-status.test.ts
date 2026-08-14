@@ -8,6 +8,8 @@
  * because the only tests asserted that the *callers* fired. This asserts the
  * sink: text handed to the component must appear in its rendered output.
  */
+
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { StatusLineComponent, type StatusLineData } from "../src/modes/interactive/components/status-line.ts";
 
@@ -23,6 +25,7 @@ function base(over: Partial<StatusLineData> = {}): StatusLineData {
 		sessionCost: 0,
 		autoCompact: false,
 		working: false,
+		nvimConnected: false,
 		now: 0,
 		...over,
 	};
@@ -41,18 +44,30 @@ describe("status line renders extension statuses", () => {
 	it("renders slots as background pills, not bare text", () => {
 		const c = new StatusLineComponent(() => base({ extensionStatuses: ["crew: 1 to resume"] }), ui);
 		const out = c.render(200).join("");
-		expect(out).toContain("\x1b[40m\x1b[37m crew: 1 to resume "); // first slot: black pill, white fg
+		expect(out).toMatch(/\x1b\[4[0-7]m\x1b\[3[07]m crew: 1 to resume \x1b\[0m/); // some bg pill, picked fg
 	});
 
-	it("gives each status slot a deterministic, distinct background", () => {
-		const bgOf = (slots: string[]) =>
+	it("never lets adjacent pills share a background", () => {
+		const out = new StatusLineComponent(() => base({ extensionStatuses: ["launch 2 jobs", "until: watching"] }), ui)
+			.render(200)
+			.join("");
+		const bgs = [...out.matchAll(/\x1b\[(4[0-7])m/g)].map((m) => m[1]);
+		expect(bgs.length).toBeGreaterThan(3);
+		for (let i = 1; i < bgs.length; i++) {
+			expect(bgs[i]).not.toBe(bgs[i - 1]); // every meeting pair differs
+		}
+	});
+
+	it("assigns backgrounds deterministically from the flow, not the slot index", () => {
+		const render = (slots: string[]) =>
 			new StatusLineComponent(() => base({ extensionStatuses: slots }), ui).render(200).join("");
-		const one = bgOf(["launch 2 jobs"]);
-		const two = bgOf(["launch 2 jobs", "until: watching"]);
-		const refreshed = bgOf(["launch 3 jobs"]);
-		expect(one).toContain("\x1b[40m\x1b[37m launch 2 jobs "); // slot 0: black pill
-		expect(two).toContain("\x1b[47m\x1b[30m until: watching "); // slot 1: white pill
-		expect(refreshed).toContain("\x1b[40m\x1b[37m launch 3 jobs "); // same position keeps its color
+		const one = render(["launch 2 jobs"]);
+		const refreshed = render(["launch 3 jobs"]);
+		expect(refreshed.replace("launch 3 jobs", "launch 2 jobs")).toBe(one);
+		// slot 0 lands on green here (version magenta → cwd yellow → ext green);
+		// slot 1 skips to cyan so the pair differs.
+		expect(one).toContain("\x1b[42m\x1b[30m launch 2 jobs ");
+		expect(render(["launch 2 jobs", "until: watching"])).toContain("\x1b[46m\x1b[30m until: watching ");
 	});
 
 	it("keeps the pill background through the truncation ellipsis", () => {
@@ -87,5 +102,43 @@ describe("status line renders extension statuses", () => {
 		const c = new StatusLineComponent(() => base({ extensionStatuses: ["", "kern 3T·2R"] }), ui);
 		const out = c.render(200).join("");
 		expect(out).toContain("kern 3T·2R");
+	});
+
+	it("shows an nvim pill in front of the version while paired", () => {
+		const out = new StatusLineComponent(() => base({ nvimConnected: true }), ui).render(200).join("");
+		expect(out).toContain("\x1b[0m\x1b[40m\x1b[37m nvim \x1b[0m\x1b[45m\x1b[30m pi v1.0.0 ");
+	});
+
+	it("hides the nvim pill when not paired", () => {
+		const out = new StatusLineComponent(() => base(), ui).render(200).join("");
+		expect(out).not.toContain(" nvim ");
+	});
+
+	it("wraps to a new line when the flow overflows, still flowing left to right", () => {
+		const c = new StatusLineComponent(
+			() =>
+				base({
+					cwd: "/some/really/long/working/directory/name/that/takes/space",
+					extensionStatuses: ["persona: scout", "launch 2 jobs", "until: watching"],
+					sessionCost: 0.42,
+				}),
+			ui,
+		);
+		const lines = c.render(60);
+		expect(lines.length).toBeGreaterThan(1);
+		const joined = lines.join("\n");
+		for (const text of [
+			"/some/really/long/working/directory/name/that/takes/space",
+			"persona: scout",
+			"launch 2 jobs",
+			"until: watching",
+			"$0.42",
+		]) {
+			expect(joined).toContain(text);
+		}
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(60); // nothing overflows the terminal
+			expect(line[0]).not.toBe(" "); // every line starts at column 0
+		}
 	});
 });

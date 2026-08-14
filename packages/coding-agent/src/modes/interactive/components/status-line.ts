@@ -131,6 +131,20 @@ function styled(bgAnsi: string, text: string): string {
 	return styledTight(bgAnsi, ` ${text} `, bestFg(bgAnsi));
 }
 
+/**
+ * Pick the background for the next pill. The invariant the whole layout keeps
+ * is: two pills that meet — side by side on a line or across a wrap — never
+ * share a background. So the next pill draws from the palette minus the
+ * previous pill's color. Sections may *prefer* a semantic color (version
+ * magenta, git green, overload red, …); the preference is honored unless it
+ * would collide with the previous pill.
+ */
+function pickBg(prevIdx: number, preferred?: (typeof EXT_BG)[number]): number {
+	const prefIdx = preferred ? EXT_BG.indexOf(preferred) : -1;
+	if (prefIdx >= 0 && prefIdx !== prevIdx) return prefIdx;
+	return (prevIdx + 1) % EXT_BG.length;
+}
+
 function formatHHMM(ms: number): string {
 	const d = new Date(ms);
 	const hh = String(d.getHours()).padStart(2, "0");
@@ -171,14 +185,19 @@ export type StatusLineData = {
 	sessionCost: number;
 	autoCompact: boolean;
 	working: boolean;
+	/** True while pi is paired with a running nvim instance (socket connected). */
+	nvimConnected: boolean;
 	/** Status slots published by extensions via ctx.ui.setStatus(), in registration order. */
 	extensionStatuses?: readonly string[];
 	now: number;
 };
 
 /**
- * NuShell-style statusline rendered above the input line.
- * Accepts a data factory to pull live state on every render.
+ * Statusline rendered above the input line: a left-aligned flow of background
+ * pills. All sections float left; when the next pill would overflow the line
+ * it wraps to a new line, also flowing left to right. Adjacent pills always
+ * have different backgrounds. Accepts a data factory to pull live state on
+ * every render.
  */
 export class StatusLineComponent implements Component {
 	private readonly getData: () => StatusLineData;
@@ -224,26 +243,31 @@ export class StatusLineComponent implements Component {
 		const d = this.getData();
 		if (process.env.NO_COLOR) {
 			const loader = d.working ? "..." : "";
-			const plain = [loader, d.cwd, d.gitStatus?.branch].filter(Boolean).join(" ");
+			const plain = [d.nvimConnected ? "nvim" : "", loader, d.cwd, d.gitStatus?.branch].filter(Boolean).join(" ");
 			return [truncateToWidth(plain, width, "")];
 		}
-		const segments: string[] = [];
 
-		// Spinner dot — no background, fixed terminal cyan
-		if (d.working) {
-			segments.push(`${SPINNER_COLOR}${SAND_FRAMES[this.spinnerFrame]}${RESET}`);
-		} else {
-			segments.push(`${SPINNER_COLOR}${IDLE_DOT}${RESET}`);
-		}
+		// Build the pill sequence, left to right. Every pill gets a background;
+		// each one differs from the pill before it (pickBg), so pills that meet
+		// — on the same line or across a wrap — never share a background.
+		const pills: { text: string; width: number }[] = [];
+		let prevBg = -1;
+		const push = (text: string, preferred?: (typeof EXT_BG)[number]) => {
+			const idx = pickBg(prevBg, preferred);
+			prevBg = idx;
+			const s = styled(EXT_BG[idx], text);
+			pills.push({ text: s, width: visibleWidth(s) });
+		};
+
+		// nvim flag — a plain "nvim" pill in front of the version while paired.
+		if (d.nvimConnected) push("nvim");
 
 		// Version segment — first item, "!" prefix when update available
 		const versionLabel = d.updateAvailable ? `! pi v${d.version}` : `pi v${d.version}`;
-		segments.push(styled(d.updateAvailable ? BG.versionUpdate : BG.version, versionLabel));
+		push(versionLabel, d.updateAvailable ? BG.versionUpdate : BG.version);
 
 		// CWD segment
-		if (d.cwd) {
-			segments.push(styled(BG.cwd, d.cwd));
-		}
+		if (d.cwd) push(d.cwd, BG.cwd);
 
 		// Git status segment: branch + ahead/behind + changes/deletions
 		if (d.gitStatus) {
@@ -255,24 +279,18 @@ export class StatusLineComponent implements Component {
 			if (g.deleted > 0) parts.push(`-${g.deleted}`);
 			// Clock and uptime
 			parts.push(`${formatHHMM(d.now)} UP ${formatUptime(process.uptime())}`);
-			segments.push(styled(BG.git, parts.join(" ")));
+			push(parts.join(" "), BG.git);
 		}
-
-		// Right-side segments: extension statuses, context, tokens, cost
-		const rightSegments: string[] = [];
 
 		// Extension statuses render as short background pills (the status bar only
 		// carries brief, global state — no plain-text chatter, no long sentences).
-		// Color is assigned by slot position (EXT_BG), so it is deterministic and
-		// adjacent slots always differ.
 		const extSlots = d.extensionStatuses ?? [];
-		for (let i = 0; i < extSlots.length; i++) {
-			const text = extSlots[i];
+		for (const text of extSlots) {
 			if (text) {
 				// truncateToWidth injects a reset at the ellipsis; strip it so the
 				// truncated pill keeps its background through the "…".
 				const truncated = truncateToWidth(text, EXT_STATUS_MAX, "…").replace(/\x1b\[0m/g, "");
-				rightSegments.push(styled(EXT_BG[i % EXT_BG.length], truncated));
+				push(truncated);
 			}
 		}
 
@@ -280,37 +298,37 @@ export class StatusLineComponent implements Component {
 			const pct = d.contextPercent !== null ? `${d.contextPercent.toFixed(1)}%` : "?";
 			const auto = d.autoCompact ? " auto" : "";
 			const overloaded = (d.contextPercent ?? 0) > 70;
-			const bg = overloaded ? BG.ctxOver : BG.ctx;
-			rightSegments.push(styled(bg, `${pct}${auto}`));
+			push(`${pct}${auto}`, overloaded ? BG.ctxOver : BG.ctx);
 		}
 
 		const tokParts: string[] = [];
 		if (d.inputTokens > 0) tokParts.push(`\u2191${formatTokens(d.inputTokens)}`);
 		if (d.outputTokens > 0) tokParts.push(`\u2193${formatTokens(d.outputTokens)}`);
-		if (tokParts.length > 0) {
-			rightSegments.push(styled(BG.tokens, tokParts.join(" ")));
-		}
+		if (tokParts.length > 0) push(tokParts.join(" "), BG.tokens);
 
-		if (d.sessionCost > 0) {
-			rightSegments.push(styled(BG.cost, `$${d.sessionCost.toFixed(2)}`));
-		}
+		if (d.sessionCost > 0) push(`$${d.sessionCost.toFixed(2)}`, BG.cost);
 
-		let line = segments.join("");
-		const leftWidth = visibleWidth(line);
-
-		if (rightSegments.length > 0) {
-			const rightStr = rightSegments.join("");
-			const rightWidth = visibleWidth(rightStr);
-			if (leftWidth + rightWidth <= width) {
-				const pad = width - leftWidth - rightWidth;
-				line += " ".repeat(pad) + rightStr;
-			} else if (leftWidth < width) {
-				const available = width - leftWidth;
-				const truncated = truncateToWidth(rightStr, available, "");
-				line += " ".repeat(Math.max(0, available - visibleWidth(truncated))) + truncated;
+		// Greedy left-to-right flow: each line starts at column 0; when the next
+		// pill would overflow, wrap to a new line. The spinner leads the first
+		// line only — it is the one non-backgrounded element (activity cursor).
+		const lines: string[] = [];
+		const spinner = d.working
+			? `${SPINNER_COLOR}${SAND_FRAMES[this.spinnerFrame]}${RESET}`
+			: `${SPINNER_COLOR}${IDLE_DOT}${RESET}`;
+		let line = spinner;
+		let lineWidth = visibleWidth(spinner);
+		for (const pill of pills) {
+			if (lineWidth + pill.width > width && lineWidth > 0) {
+				lines.push(line);
+				line = "";
+				lineWidth = 0;
 			}
+			line += pill.text;
+			lineWidth += pill.width;
 		}
+		lines.push(line);
 
-		return [truncateToWidth(line, width, "")];
+		// A single over-long pill still gets clipped to the terminal width.
+		return lines.map((l) => truncateToWidth(l, width, ""));
 	}
 }
