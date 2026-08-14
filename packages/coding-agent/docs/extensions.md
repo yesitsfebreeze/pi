@@ -2601,6 +2601,8 @@ See [examples/extensions/timed-confirm.ts](../examples/extensions/timed-confirm.
 
 ```typescript
 // Status in footer (persistent until cleared)
+// Renders as a compact background pill: keep the text short, single-line, and
+// global (machine/repo state) — session-local chatter does not belong here.
 ctx.ui.setStatus("my-ext", "Processing...");
 ctx.ui.setStatus("my-ext", undefined);  // Clear
 

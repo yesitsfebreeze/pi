@@ -38,6 +38,46 @@ describe("status line renders extension statuses", () => {
 		expect(out).toContain("launch 2 jobs");
 	});
 
+	it("renders slots as background pills, not bare text", () => {
+		const c = new StatusLineComponent(() => base({ extensionStatuses: ["crew: 1 to resume"] }), ui);
+		const out = c.render(200).join("");
+		expect(out).toContain("\x1b[40m\x1b[37m crew: 1 to resume "); // first slot: black pill, white fg
+	});
+
+	it("gives each status slot a deterministic, distinct background", () => {
+		const bgOf = (slots: string[]) =>
+			new StatusLineComponent(() => base({ extensionStatuses: slots }), ui).render(200).join("");
+		const one = bgOf(["launch 2 jobs"]);
+		const two = bgOf(["launch 2 jobs", "until: watching"]);
+		const refreshed = bgOf(["launch 3 jobs"]);
+		expect(one).toContain("\x1b[40m\x1b[37m launch 2 jobs "); // slot 0: black pill
+		expect(two).toContain("\x1b[47m\x1b[30m until: watching "); // slot 1: white pill
+		expect(refreshed).toContain("\x1b[40m\x1b[37m launch 3 jobs "); // same position keeps its color
+	});
+
+	it("keeps the pill background through the truncation ellipsis", () => {
+		const long = "next test layout: routing tests into gossip/tests (follow-up)";
+		const c = new StatusLineComponent(() => base({ extensionStatuses: [long] }), ui);
+		const out = c.render(200).join("");
+		expect(out).toContain("…");
+		expect(out).not.toContain("\x1b[0m…"); // truncateToWidth's injected reset is stripped
+	});
+
+	it("renders tokens and cost as their own pills", () => {
+		const c = new StatusLineComponent(() => base({ sessionCost: 0.42 }), ui);
+		const out = c.render(200).join("");
+		expect(out).toContain("\x1b[40m\x1b[37m ↑1 ↓1 "); // tokens: black pill
+		expect(out).toContain("\x1b[47m\x1b[30m $0.42 "); // cost: white pill
+	});
+
+	it("caps verbose slots to a short pill", () => {
+		const long = "next test layout: routing tests into gossip/tests (follow-up)";
+		const c = new StatusLineComponent(() => base({ extensionStatuses: [long] }), ui);
+		const out = c.render(200).join("");
+		expect(out).not.toContain(long);
+		expect(out).toContain("…");
+	});
+
 	it("renders nothing extra when there are no slots", () => {
 		const c = new StatusLineComponent(() => base(), ui);
 		expect(c.render(200).join("")).not.toContain("persona");

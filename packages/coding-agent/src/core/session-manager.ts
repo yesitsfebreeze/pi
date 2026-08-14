@@ -865,6 +865,8 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	// Bumped on every append — lets renderers memoize O(n) walks over entries.
+	private _revision = 0;
 
 	private constructor(
 		cwd: string,
@@ -1046,6 +1048,7 @@ export class SessionManager {
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
+		this._revision++;
 		this._persist(entry);
 	}
 
@@ -1301,6 +1304,11 @@ export class SessionManager {
 	 */
 	getEntries(): SessionEntry[] {
 		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+	}
+
+	/** Monotonic counter bumped on every append — memoization key for derived views. */
+	get revision(): number {
+		return this._revision;
 	}
 
 	/**

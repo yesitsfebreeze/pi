@@ -1,7 +1,7 @@
 /**
  * PersonaManager — manages the active persona for a session.
  *
- * Handles persona loading, switching, system prompt injection, status bar,
+ * Handles persona loading, switching, system prompt injection,
  * and the /persona command (including the TUI picker).
  */
 import { readFileSync } from "node:fs";
@@ -18,7 +18,6 @@ const DEFAULT_ID = "substrate";
 import { resolvePiDirs } from "../pi-dirs.ts";
 
 const OVERRIDE_FILE = ".pi/persona.md";
-const STATUS_KEY = "persona";
 
 // ---------------------------------------------------------------------------
 // PersonaManager
@@ -107,16 +106,6 @@ export class PersonaManager {
 		].join("\n");
 	}
 
-	/** Status bar text. */
-	statusText(): string {
-		const p = this.active;
-		if (!p) return "";
-		const parts = [p.name, p.profession].filter(Boolean);
-		const label = parts.join(" · ");
-		const tail = this._selectedId !== DEFAULT_ID ? ` · ${this._selectedId}` : "";
-		return `persona: ${label}${tail}`;
-	}
-
 	/** Switch to a persona by id. Returns false if not found. */
 	switchTo(id: string): boolean {
 		if (!this.getPersona(id)) return false;
@@ -162,28 +151,12 @@ export class PersonaManager {
 				if (self.switchTo(action)) {
 					const p = self.active!;
 					ctx.ui.notify(`persona: ${p.name} · ${p.profession}`, "info");
-					self._updateStatusBar(ctx);
 				} else {
 					const ids = self._personas.map((p) => p.id).join(", ");
 					ctx.ui.notify(`unknown persona "${action}". Available: ${ids}`, "warning");
 				}
 			},
 		});
-	}
-
-	/** Update the status bar with current persona. */
-	private _updateStatusBar(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(STATUS_KEY, this.statusText());
-	}
-
-	/** Set the status bar at session start. */
-	setStatusBar(ctx: ExtensionContext): void {
-		this._updateStatusBar(ctx);
-	}
-
-	/** Clear status bar. */
-	clearStatusBar(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
 
 	// ------------------------------------------------------------------
@@ -283,7 +256,6 @@ export class PersonaManager {
 
 		if (!chosen || chosen.id === this._selectedId) return;
 		this._selectedId = chosen.id;
-		this._updateStatusBar(ctx);
 		ctx.ui.notify(`persona: ${chosen.name} · ${chosen.profession}`, "info");
 	}
 }

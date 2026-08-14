@@ -354,7 +354,6 @@ export function createPersonaExtension(): InlineExtension {
 		name: "persona",
 		factory(pi) {
 			const mgr = new PersonaManager(process.cwd());
-			let ui: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
 
 			// Register the /persona command + picker at load time so it is part
 			// of the static command surface (not deferred to session_start).
@@ -362,14 +361,6 @@ export function createPersonaExtension(): InlineExtension {
 
 			pi.on("session_start", (_event, ctx) => {
 				mgr.updateCwd(ctx?.cwd ?? process.cwd());
-				ui = ctx?.ui;
-				if (ctx) mgr.setStatusBar(ctx);
-			});
-
-			pi.on("session_shutdown", (_event, ctx) => {
-				if (ctx) mgr.clearStatusBar(ctx);
-				ui?.setStatus?.("persona", undefined);
-				ui = undefined;
 			});
 
 			pi.on("before_agent_start", (event) => {

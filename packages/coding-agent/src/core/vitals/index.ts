@@ -245,24 +245,13 @@ export function createVitalsInlineExtension(): InlineExtension {
 		factory(pi: ExtensionAPI) {
 			let timer: ReturnType<typeof setInterval> | undefined;
 			let ui: ExtensionContext["ui"] | undefined;
-			const STATUS_KEY = "vitals";
 
-			const paint = (lvl: Level, text: string) => {
-				const badge = lvl === "crit" ? "!!" : lvl === "warn" ? "!" : "";
-				ui?.setStatus?.(
-					STATUS_KEY,
-					text
-						? `vitals ${badge} ${fmt(current().rss)} · ${text.split(" · ").slice(1).join(" · ")}`
-						: `vitals ${fmt(current().rss)}`,
-				);
-			};
-
+			// No status-bar slot: vitals is session-local noise — the user only
+			// needs it when something escalates, and that path is notifications
+			// (plus the /doctor health check below).
 			setOnVitalsChange((lvl, text) => {
 				if (text) {
 					ui?.notify?.(text, lvl === "crit" ? "error" : "warning");
-					paint(lvl, text);
-				} else {
-					paint(lvl, "");
 				}
 			});
 
@@ -277,7 +266,6 @@ export function createVitalsInlineExtension(): InlineExtension {
 			pi.on("session_shutdown", () => {
 				if (timer) clearInterval(timer);
 				timer = undefined;
-				ui?.setStatus?.(STATUS_KEY, undefined);
 				ui = undefined;
 			});
 

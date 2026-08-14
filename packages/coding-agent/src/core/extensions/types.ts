@@ -146,7 +146,9 @@ export interface ExtensionUIContext {
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
 
-	/** Set status text in the footer/status bar. Pass undefined to clear. */
+	/** Set status text in the status bar, rendered as a compact background pill.
+	 * Keep the text short and global — the bar carries brief machine/repo state,
+	 * not session-local chatter. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
 
 	/** Set the working/loading message shown during streaming. Call with no argument to restore default. */

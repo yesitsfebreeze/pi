@@ -43,8 +43,8 @@ const SAND_FRAMES = [
 ] as const;
 const SPINNER_INTERVAL_MS = 80;
 
-// Foreground palette for the spinner dot — picked randomly once per session
-const DOT_PALETTE = ["\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[35m", "\x1b[36m"] as const;
+// Spinner dot foreground — fixed terminal cyan (deterministic, ANSI-16)
+const SPINNER_COLOR = "\x1b[36m";
 // Static dot shown when the agent is idle (all 8 braille dots filled)
 const IDLE_DOT = "⣿";
 
@@ -59,7 +59,28 @@ const BG = {
 	git: "\x1b[42m", // green
 	ctx: "\x1b[46m", // cyan
 	ctxOver: "\x1b[41m", // red
+	tokens: "\x1b[40m", // black — quiet counter pill
+	cost: "\x1b[47m", // white — quiet cost pill
 } as const;
+
+// Extension statuses are secondary: bound each to a short pill so a verbose
+// publisher can't blow out the status bar.
+const EXT_STATUS_MAX = 24;
+
+// Per-slot backgrounds for extension statuses. Only terminal-native ANSI-16
+// colors are used — the same set as the core segments above — assigned by slot
+// position so the mapping is deterministic and adjacent slots always differ.
+// First slot black, second white, then red/blue, then the always-on core hues.
+const EXT_BG = [
+	"\x1b[40m", // black
+	"\x1b[47m", // white
+	"\x1b[41m", // red
+	"\x1b[44m", // blue
+	"\x1b[45m", // magenta
+	"\x1b[43m", // yellow
+	"\x1b[42m", // green
+	"\x1b[46m", // cyan
+] as const;
 
 // ANSI 16-color reference RGB values (indices 0-7)
 const ANSI_REF: Record<number, [number, number, number]> = {
@@ -163,13 +184,11 @@ export class StatusLineComponent implements Component {
 	private readonly getData: () => StatusLineData;
 	private spinnerFrame = 0;
 	private spinnerInterval: NodeJS.Timeout | null = null;
-	private readonly spinnerColor: string;
 	private readonly ui: TUI;
 
 	constructor(getData: () => StatusLineData, ui: TUI) {
 		this.getData = getData;
 		this.ui = ui;
-		this.spinnerColor = DOT_PALETTE[Math.floor(Math.random() * DOT_PALETTE.length)];
 	}
 
 	startSpinner(): void {
@@ -210,11 +229,11 @@ export class StatusLineComponent implements Component {
 		}
 		const segments: string[] = [];
 
-		// Spinner dot — no background, coloured randomly once per session
+		// Spinner dot — no background, fixed terminal cyan
 		if (d.working) {
-			segments.push(`${this.spinnerColor}${SAND_FRAMES[this.spinnerFrame]}${RESET}`);
+			segments.push(`${SPINNER_COLOR}${SAND_FRAMES[this.spinnerFrame]}${RESET}`);
 		} else {
-			segments.push(`${this.spinnerColor}${IDLE_DOT}${RESET}`);
+			segments.push(`${SPINNER_COLOR}${IDLE_DOT}${RESET}`);
 		}
 
 		// Version segment — first item, "!" prefix when update available
@@ -242,8 +261,19 @@ export class StatusLineComponent implements Component {
 		// Right-side segments: extension statuses, context, tokens, cost
 		const rightSegments: string[] = [];
 
-		for (const status of d.extensionStatuses ?? []) {
-			if (status) rightSegments.push(` ${status} `);
+		// Extension statuses render as short background pills (the status bar only
+		// carries brief, global state — no plain-text chatter, no long sentences).
+		// Color is assigned by slot position (EXT_BG), so it is deterministic and
+		// adjacent slots always differ.
+		const extSlots = d.extensionStatuses ?? [];
+		for (let i = 0; i < extSlots.length; i++) {
+			const text = extSlots[i];
+			if (text) {
+				// truncateToWidth injects a reset at the ellipsis; strip it so the
+				// truncated pill keeps its background through the "…".
+				const truncated = truncateToWidth(text, EXT_STATUS_MAX, "…").replace(/\x1b\[0m/g, "");
+				rightSegments.push(styled(EXT_BG[i % EXT_BG.length], truncated));
+			}
 		}
 
 		if (d.contextWindow > 0) {
@@ -258,11 +288,11 @@ export class StatusLineComponent implements Component {
 		if (d.inputTokens > 0) tokParts.push(`\u2191${formatTokens(d.inputTokens)}`);
 		if (d.outputTokens > 0) tokParts.push(`\u2193${formatTokens(d.outputTokens)}`);
 		if (tokParts.length > 0) {
-			rightSegments.push(` ${tokParts.join(" ")} `);
+			rightSegments.push(styled(BG.tokens, tokParts.join(" ")));
 		}
 
 		if (d.sessionCost > 0) {
-			rightSegments.push(` $${d.sessionCost.toFixed(2)} `);
+			rightSegments.push(styled(BG.cost, `$${d.sessionCost.toFixed(2)}`));
 		}
 
 		let line = segments.join("");
