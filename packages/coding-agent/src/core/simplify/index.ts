@@ -25,13 +25,24 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { loadProfiles } from "../crew/profiles.ts";
 import { runSingleSync } from "../crew/sync.ts";
+import { EDIT_TOOLS, editedRelPath } from "../edit-path.ts";
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
 
 // ─── state ──────────────────────────────────────────────────────────────────
-let root = process.cwd();
-let setStatus: ((key: string, text: string | undefined) => void) | undefined;
-let changedFiles: string[] = [];
-let simplifyReminderCount = 0;
+// Per-session, created in the extension factory closure — a module-level latch
+// would bleed across sessions (setStatus pointing at a disposed UI, changed
+// files accumulating process-wide). Same pattern as file-awareness/launch.
+interface SimplifyState {
+	root: string;
+	setStatus: ((key: string, text: string | undefined) => void) | undefined;
+	changedFiles: string[];
+	simplifyReminderCount: number;
+}
+
+function newSimplifyState(): SimplifyState {
+	return { root: process.cwd(), setStatus: undefined, changedFiles: [], simplifyReminderCount: 0 };
+}
+
 // One reminder per change — simplify runs once; it does not need nagging.
 const MAX_SIMPLIFY_REMINDERS = 1;
 
@@ -49,14 +60,16 @@ and returns a verdict:
 Never run simplify repeatedly to "check your work". One run per ticket.`;
 
 /**
- * True while this session is inside a gantt work loop — `/gantt work` or
- * `work-here`, both of which wear the `work` role. The automatic half of
- * simplify (prompt injection + post-turn reminder) is gated on this; the tool
- * and the command stay available everywhere for manual use.
+ * True while this session is inside a gantt work loop — `/gantt work`,
+ * `work-here`, or the conductor (bare `/gantt`, which closes tickets too).
+ * All three wear a role that `core/gantt` sets on `globalThis.__gantt`. The
+ * automatic half of simplify (prompt injection + post-turn reminder) is
+ * gated on this; the tool and the command stay available everywhere for
+ * manual use.
  */
 function inGanttWork(): boolean {
 	const g = (globalThis as Record<string, unknown>).__gantt as { role?: unknown } | undefined;
-	return g?.role === "work";
+	return g?.role === "work" || g?.role === "conductor";
 }
 
 // ─── follow-up chain ────────────────────────────────────────────────────────
@@ -145,7 +158,8 @@ async function dispatchFollowUp(
 	files: string,
 	cwd: string,
 	signal: AbortSignal | undefined,
-	onUpdate?: AgentToolUpdateCallback,
+	onUpdate: AgentToolUpdateCallback | undefined,
+	setStatus: SimplifyState["setStatus"],
 ): Promise<{ clean: boolean; report: string; findings: string }> {
 	const profiles = loadProfiles(cwd);
 	const rows: string[] = [];
@@ -177,7 +191,7 @@ async function dispatchFollowUp(
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-function gitDiffFiles(): string[] {
+function gitDiffFiles(root: string): string[] {
 	// No `.git` pre-checks: in a linked worktree `.git` is a *file*, so testing
 	// for `<root>/.git/HEAD` fails and this returned [] for every worktree —
 	// including the ones `forest` creates under `.pi/trees/`. The catch below
@@ -214,21 +228,22 @@ async function simplifyAction(
 	target: string,
 	cwd: string,
 	signal: AbortSignal | undefined,
-	onUpdate?: AgentToolUpdateCallback,
+	onUpdate: AgentToolUpdateCallback | undefined,
+	state: SimplifyState,
 ): Promise<string> {
 	const t = target.trim();
 	// A real path → review that file. Free text (a feature name) → review the
 	// diff, focused. Without this, a feature name would be handed to the
 	// sub-agent as a literal (non-existent) file path and it would find
 	// nothing to review.
-	const named = t && fs.existsSync(path.resolve(root, t));
+	const named = t && fs.existsSync(path.resolve(state.root, t));
 	const focus = named ? undefined : t || undefined;
 	let files: string[];
 	if (named) {
 		files = [t];
 	} else {
-		const diff = gitDiffFiles();
-		files = diff.length > 0 ? diff : [...changedFiles];
+		const diff = gitDiffFiles(state.root);
+		files = diff.length > 0 ? diff : [...state.changedFiles];
 	}
 	if (files.length === 0) {
 		return "[SIMPLIFY: CLEAN] — no changes to review.";
@@ -236,7 +251,7 @@ async function simplifyAction(
 
 	const filesBlock = files.map((f) => `- ${f}`).join("\n");
 	const scope = focus ? `Focus: ${focus}\n\n${filesBlock}` : filesBlock;
-	const { clean, report, findings } = await dispatchFollowUp(scope, cwd, signal, onUpdate);
+	const { clean, report, findings } = await dispatchFollowUp(scope, cwd, signal, onUpdate, state.setStatus);
 	return [
 		"## Simplify — follow-up via sub-agents (once, in order)",
 		"",
@@ -253,17 +268,18 @@ async function simplifyAction(
 }
 
 // ─── wiring ─────────────────────────────────────────────────────────────────
-const EDIT_TOOLS = new Set(["edit", "write", "str_replace_editor", "create"]);
 
 export function createSimplifyExtension(): (pi: ExtensionAPI) => void {
 	return (pi: ExtensionAPI) => {
+		const state = newSimplifyState();
+
 		pi.on("session_start", (_event: any, ctx: any) => {
-			root = ctx?.cwd ?? root;
-			setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
+			state.root = ctx?.cwd ?? state.root;
+			state.setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
 		});
 
 		pi.on("session_shutdown", () => {
-			setStatus = undefined;
+			state.setStatus = undefined;
 		});
 
 		// Inject simplify principles — only inside a gantt work loop. Ordinary
@@ -279,22 +295,20 @@ export function createSimplifyExtension(): (pi: ExtensionAPI) => void {
 		// Track edited files for the review prompt.
 		pi.on("tool_call", (event: any) => {
 			if (!EDIT_TOOLS.has(event?.toolName)) return;
-			const p = event?.input?.path ?? event?.input?.file_path;
-			if (typeof p !== "string") return;
-			const rel = path.relative(root, path.resolve(root, p));
-			if (rel.startsWith("..")) return;
-			if (!changedFiles.includes(rel)) changedFiles.push(rel);
+			const rel = editedRelPath(event, state.root);
+			if (!rel) return;
+			if (!state.changedFiles.includes(rel)) state.changedFiles.push(rel);
 		});
 
 		// Remind the agent to run simplify after a change — once per change, and
 		// only in a gantt work loop. Outside one, a change is just a change.
 		pi.on("agent_settled", () => {
 			if (!inGanttWork()) return;
-			if (changedFiles.length === 0) return;
-			if (simplifyReminderCount >= MAX_SIMPLIFY_REMINDERS) return;
-			simplifyReminderCount++;
+			if (state.changedFiles.length === 0) return;
+			if (state.simplifyReminderCount >= MAX_SIMPLIFY_REMINDERS) return;
+			state.simplifyReminderCount++;
 			pi.sendUserMessage(
-				`simplify: changes made this turn — before closing the ticket, run the simplify tool (/simplify or the simplify tool) once to dispatch the follow-up (check, test, persona review). (${simplifyReminderCount}/${MAX_SIMPLIFY_REMINDERS})`,
+				`simplify: changes made this turn — before closing the ticket, run the simplify tool (/simplify or the simplify tool) once to dispatch the follow-up (check, test, persona review). (${state.simplifyReminderCount}/${MAX_SIMPLIFY_REMINDERS})`,
 				{ deliverAs: "followUp" },
 			);
 		});
@@ -304,11 +318,11 @@ export function createSimplifyExtension(): (pi: ExtensionAPI) => void {
 			description:
 				"Post-change follow-up: dispatch check/test/persona review sub-agents once, in order. /simplify [target]",
 			async handler(args: string, ctx: any) {
-				root = ctx?.cwd ?? root;
-				setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
-				const msg = await simplifyAction(args, root, undefined);
-				changedFiles = []; // clear — the follow-up covered this change
-				simplifyReminderCount = 0;
+				state.root = ctx?.cwd ?? state.root;
+				state.setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
+				const msg = await simplifyAction(args, state.root, undefined, undefined, state);
+				state.changedFiles = []; // clear — the follow-up covered this change
+				state.simplifyReminderCount = 0;
 				ctx.ui.notify(msg.includes("[SIMPLIFY: CLEAN]") ? "simplify: clean" : "simplify: fixes needed", "info");
 				pi.sendUserMessage(msg, { deliverAs: "followUp" });
 			},
@@ -330,11 +344,11 @@ export function createSimplifyExtension(): (pi: ExtensionAPI) => void {
 				),
 			}),
 			async execute(_id, params: any, signal: AbortSignal | undefined, onUpdate, ctx: ExtensionContext) {
-				root = ctx?.cwd ?? root;
-				setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
-				const msg = await simplifyAction(params?.target ?? "", root, signal, onUpdate);
-				changedFiles = []; // clear — the follow-up covered this change
-				simplifyReminderCount = 0;
+				state.root = ctx?.cwd ?? state.root;
+				state.setStatus = ctx?.ui?.setStatus?.bind(ctx.ui);
+				const msg = await simplifyAction(params?.target ?? "", state.root, signal, onUpdate, state);
+				state.changedFiles = []; // clear — the follow-up covered this change
+				state.simplifyReminderCount = 0;
 				return {
 					content: [{ type: "text" as const, text: msg }],
 					details: {},

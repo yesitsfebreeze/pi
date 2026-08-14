@@ -26,6 +26,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
 import { createVolatileChannel } from "../context-injection.ts";
+import { EDIT_TOOLS, editedRelPath } from "../edit-path.ts";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
 
 const STATUS_KEY = "rigor";
@@ -442,7 +443,6 @@ async function postpass(pi: ExtensionAPI): Promise<void> {
 }
 
 // ─── wiring ─────────────────────────────────────────────────────────────────
-const EDIT_TOOLS = new Set(["edit", "write", "str_replace_editor", "create"]);
 
 export function createRigorExtension(): (pi: ExtensionAPI) => void {
 	const pitfalls = createVolatileChannel("rigor-pitfalls");
@@ -472,10 +472,8 @@ export function createRigorExtension(): (pi: ExtensionAPI) => void {
 
 		pi.on("tool_call", (event: any) => {
 			if (!EDIT_TOOLS.has(event?.toolName)) return;
-			const p = event?.input?.path ?? event?.input?.file_path;
-			if (typeof p !== "string") return;
-			const rel = path.relative(root, path.resolve(root, p));
-			if (rel.startsWith("..")) return;
+			const rel = editedRelPath(event, root);
+			if (!rel) return;
 			const section = rel.split(path.sep)[0];
 			if (section && !section.includes(".")) touched.add(section);
 		});
