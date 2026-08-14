@@ -37,9 +37,11 @@ function title(theme: any, name: string, rest = "") {
  * to bash for file work).
  */
 export const nvimPromptGuidelines = [
-	"nvim is connected. All file operations — read, write, edit, grep, find, ls — are forwarded through nvim so you see exactly what the user sees. Prefer the nvim-native tools (nvim_state, nvim_read_buf, nvim_find_replace, nvim_search, nvim_find_files, buffers, and the LSP tools) over bash for reading, searching, and editing files.",
+	"nvim is connected. All file operations — read, write, edit, grep, find, ls — are forwarded through nvim so you see exactly what the user sees. Prefer the nvim-native tools (nvim_state, nvim_read_buf, nvim_find_replace, nvim_find_replace_all, nvim_search, nvim_find_files, buffers, and the LSP tools) over bash for reading, searching, and editing files.",
 	"bash runs on pi's local executor (not through nvim): it behaves exactly as without nvim — POSIX shell, timeouts, abort, env all work — and it never blocks the editor. Use it freely for builds, tests, and git.",
-	"Never launch nvim/vim/vi from bash to open a file — you already control the running nvim instance. Use nvim_read_buf to read a buffer and nvim_find_replace/nvim_exec/nvim_keys to edit it.",
+	"Never launch nvim/vim/vi from bash to open a file — you already control the running nvim instance. Use nvim_read_buf to read a buffer and nvim_find_replace/nvim_find_replace_all/nvim_exec/nvim_keys to edit it.",
+	"Search results (nvim_search, nvim_find_replace_all) land in nvim's quickfix list — open it with nvim_exec({ command: 'copen' }) and the user navigates the matches natively. For a replace across many matches, run nvim_find_replace_all with apply=false first (dry run + quickfix), then apply=true. The user's telescope pickers (<leader>fg live grep, <leader>ff files, <leader>fb buffers; multiselect sends to quickfix) are interactive: drive them with nvim_keys/nvim_exec when the user asks, and use nvim_search/nvim_find_files for your own programmatic search.",
+	"Know the user's nvim: run nvim_config (keymaps/options/lsp/plugins/search_tools) or nvim_learn note_read (notes on keymaps, plugins, lsp, options, gotchas under .pi/nvim/notes/) before making nvim-specific claims or driving their keymaps.",
 ];
 
 // ── nvim_state ──────────────────────────────────────────────────────────────

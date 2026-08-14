@@ -9,7 +9,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { createNvimConfigTool } from "./nvim-config-tool.ts";
-import type { NvimSocketClient } from "./nvim-socket-client.ts";
+import { luaQuote, type NvimSocketClient } from "./nvim-socket-client.ts";
 import { createNvimSurfaceToolDefinitions } from "./nvim-surface.ts";
 import type { NvimDiagnostic, NvimLspLocation } from "./nvim-transport-types.ts";
 
@@ -320,10 +320,9 @@ export function createNvimSearchTool(cwd: string, client: NvimSocketClient): Too
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 100;
 
-			const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-			const escaped = esc(pattern);
-			const escapedPath = esc(searchPath);
-			const escapedGlob = glob ? esc(glob) : "";
+			const escaped = luaQuote(pattern);
+			const escapedPath = luaQuote(searchPath);
+			const escapedGlob = glob ? luaQuote(glob) : "";
 
 			const lua = `
 local results = {}
@@ -346,8 +345,20 @@ end
 -- vimgrep is the only programmatic backend here: telescope and fzf-lua are
 -- interactive pickers with no headless grep API, so every "backend" branch
 -- this tool used to advertise ended up calling vimgrep anyway.
-local flag = literal and "F" or ""
-vim.cmd("silent! vimgrep /" .. flag .. pattern .. "/j " .. searchPath .. "/**")
+--
+-- literal mode must NOT inline a flag into the pattern (the old F flag
+-- landed inside the pattern, so vimgrep searched for "F <pattern>"). Use
+-- very-nomagic (\\V) instead so regex metachars are inert. The delimiter is
+-- picked at runtime to be absent from the pattern, so a '/' in the pattern
+-- cannot split the vimgrep command.
+local magic = literal and "\\\\V" or ""
+local d = "/"
+if pattern:find("/", 1, true) then
+  for _, c in ipairs({"#", "|", "@", "!", "%", "^", "&", "*", "+", "~", "="}) do
+    if not pattern:find(c, 1, true) then d = c break end
+  end
+end
+vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. searchPath .. "/**")
 local qf = vim.fn.getqflist()
 for i = 1, #qf do
   if #results >= limit then break end
@@ -430,8 +441,8 @@ export function createNvimFindFilesTool(
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 200;
 
-			const escaped = pattern.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-			const escapedPath = searchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+			const escaped = luaQuote(pattern);
+			const escapedPath = luaQuote(searchPath);
 
 			const lua = `
 local results = {}
@@ -484,6 +495,218 @@ return vim.fn.json_encode(results)
 	};
 }
 
+// ── nvim_find_replace_all (multi-file replace via quickfix) ─────────────────
+
+const nvimFindReplaceAllSchema = Type.Object({
+	pattern: Type.String({
+		description:
+			"Search pattern. Vim regex by default (groups use \\(...\\) and are referenced in the replacement as \\1, \\2…). Set literal=true for plain text.",
+	}),
+	replacement: Type.String({
+		description: "Replacement text (vim syntax: \\1 = first group, & = whole match, \\r = newline).",
+	}),
+	path: Type.Optional(Type.String({ description: "Directory to search (default: current nvim cwd)." })),
+	glob: Type.Optional(
+		Type.String({
+			description: "Only match/edit files matching this glob, e.g. '*.ts' (basename) or 'src/**/*.ts' (path).",
+		}),
+	),
+	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal text (default: false)." })),
+	apply: Type.Optional(
+		Type.Boolean({
+			description:
+				"false (default): dry run — search, populate the quickfix list, report matches, change nothing. true: apply the replacement to every matched line (via :cdo) and save the touched buffers.",
+		}),
+	),
+	limit: Type.Optional(Type.Number({ description: "Maximum matches in the report (default: 100)." })),
+});
+
+export function createNvimFindReplaceAllTool(
+	cwd: string,
+	client: NvimSocketClient,
+): ToolDefinition<typeof nvimFindReplaceAllSchema> {
+	return {
+		name: "nvim_find_replace_all",
+		label: "nvim find replace all",
+		promptSnippet: "Multi-file find-and-replace via nvim quickfix (dry-run or apply), results visible in nvim",
+		description:
+			"Find and replace across many files in one call, using nvim's own quickfix pipeline: vimgrep -> quickfix -> :cdo substitute. " +
+			"Every match lands in the user's quickfix list (open with :copen), so the change is visible and navigable in nvim. " +
+			"apply=false (default) is a dry run that reports matches without touching anything; apply=true performs the replacement and saves. " +
+			"For a single unique string in one buffer, prefer nvim_find_replace.",
+		parameters: nvimFindReplaceAllSchema,
+		async execute(_id, { pattern, replacement, path, glob, literal, apply, limit }, _signal) {
+			const searchPath = path || cwd;
+			const searchLimit = limit ?? 100;
+
+			const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+			const escaped = esc(pattern);
+			const escapedRepl = esc(replacement);
+			const escapedPath = esc(searchPath);
+			const escapedGlob = glob ? esc(glob) : "";
+
+			const lua = `
+local results = {}
+local pattern = "${escaped}"
+local replacement = "${escapedRepl}"
+local searchPath = "${escapedPath}"
+local limit = ${searchLimit}
+local literal = ${literal ? "true" : "false"}
+local apply = ${apply ? "true" : "false"}
+local glob = ${glob ? `"${escapedGlob}"` : "nil"}
+
+-- Very-nomagic for literal searches so regex metachars are inert.
+local magic = literal and "\\\\V" or ""
+
+-- vimgrep/substitute delimiter: one absent from both pattern and replacement.
+local function pick_delim(s1, s2)
+  for _, d in ipairs({"/", "#", "|", "@", "!", "%", "^", "&", "*", "+", "~", "="}) do
+    if not s1:find(d, 1, true) and not s2:find(d, 1, true) then return d end
+  end
+  return "/"
+end
+local d = pick_delim(pattern, replacement)
+
+-- Glob filter, applied to the quickfix list itself so :cdo touches only the
+-- files the caller asked for (the list the user sees == the list we edit).
+local glob_re = glob and vim.fn.glob2regpat(glob) or nil
+local glob_spans_dirs = glob and glob:find("/") ~= nil
+local function keep(file)
+  if not glob_re then return true end
+  local subject = glob_spans_dirs and file or vim.fn.fnamemodify(file, ":t")
+  return vim.fn.match(subject, glob_re) >= 0
+end
+
+-- Populate the quickfix list: every match is visible in nvim (:copen).
+vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. searchPath .. "/**")
+local qf = vim.fn.getqflist()
+
+-- Filter the quickfix list by glob (replace-in-place) so cdo edits only the
+-- kept entries and the visible list matches what we report.
+if glob then
+  local kept = {}
+  for _, item in ipairs(qf) do
+    if keep(vim.fn.bufname(item.bufnr)) then table.insert(kept, item) end
+  end
+  vim.fn.setqflist(kept, "r")
+end
+
+local function count_by_file(items)
+  local counts = {}
+  for _, item in ipairs(items) do
+    local file = vim.fn.bufname(item.bufnr)
+    counts[file] = (counts[file] or 0) + 1
+  end
+  return counts
+end
+
+local before = count_by_file(vim.fn.getqflist())
+
+if apply then
+  -- Replace on every quickfix line (g = all occurrences per line), then write
+  -- the touched buffers so the edit-tool contract (change visible on disk) holds.
+  vim.cmd("silent! cdo s" .. d .. magic .. pattern .. d .. replacement .. d .. "g")
+  vim.cmd("silent! cdo update")
+end
+
+-- Report: re-check the LIVE buffer line (qf entry text is a snapshot from
+-- vimgrep time and stays stale after :cdo) so "remaining" is honest — a
+-- replacement that re-introduces the pattern is reported, not hidden.
+local qf2 = vim.fn.getqflist()
+local after = count_by_file(qf2)
+local function line_matches(bufnr, lnum, fallback)
+  local ok, line = pcall(vim.api.nvim_buf_get_lines, bufnr, lnum - 1, lnum, false)
+  local text = (ok and line and line[1]) or (fallback or "")
+  return vim.fn.match(text, magic .. pattern) >= 0
+end
+local remaining_by_file = {}
+local changed_total = 0
+for _, item in ipairs(qf2) do
+  if line_matches(item.bufnr, item.lnum, item.text) then
+    local file = vim.fn.bufname(item.bufnr)
+    remaining_by_file[file] = (remaining_by_file[file] or 0) + 1
+  else
+    changed_total = changed_total + 1
+  end
+end
+
+local files = {}
+for file, n in pairs(before) do
+  table.insert(files, {
+    file = file,
+    matched = n,
+    remaining = remaining_by_file[file] or 0,
+  })
+end
+table.sort(files, function(a, b) return a.file < b.file end)
+
+for i = 1, math.min(#qf2, limit) do
+  local item = qf2[i]
+  table.insert(results, {
+    file = vim.fn.bufname(item.bufnr),
+    lnum = item.lnum,
+    col = item.col,
+    text = (item.text or ""):sub(1, 200),
+  })
+end
+
+return vim.fn.json_encode({
+  applied = apply,
+  total_matches = #qf2,
+  changed = changed_total,
+  files = files,
+  matches = results,
+})
+`;
+			const result = await client.evalLua(lua);
+			try {
+				const parsed = JSON.parse(result) as {
+					applied: boolean;
+					total_matches: number;
+					changed: number;
+					files: Array<{ file: string; matched: number; remaining: number }>;
+					matches: Array<{ file: string; lnum: number; col: number; text: string }>;
+				};
+				const lines: string[] = [];
+				if (parsed.total_matches === 0) {
+					lines.push("No matches found.");
+				} else {
+					lines.push(
+						`${parsed.applied ? "REPLACED" : "DRY RUN (apply=false — nothing changed, quickfix populated)"}: ` +
+							`${parsed.total_matches} matches${parsed.applied ? `, ${parsed.changed} lines changed` : ""} across ${parsed.files.length} file(s)`,
+					);
+					for (const f of parsed.files) {
+						lines.push(
+							`  ${f.file}: ${f.matched} match(es)${parsed.applied ? `, ${f.remaining} still match` : ""}`,
+						);
+					}
+					if (parsed.applied)
+						lines.push("Quickfix list updated; open with :copen or nvim_exec { command: 'copen' }.");
+					lines.push("");
+					for (const r of parsed.matches) lines.push(`  ${r.file}:${r.lnum}:${r.col}: ${r.text}`);
+				}
+				return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
+			} catch {
+				return { content: [{ type: "text" as const, text: result }], details: undefined };
+			}
+		},
+		renderCall(args, theme, _context) {
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("nvim_find_replace_all"))} ${args.pattern ?? ""} in ${args.path ?? "project"}${args.apply ? " (apply)" : " (dry-run)"}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
+}
+
 // ── all nvim tools ──────────────────────────────────────────────────────────
 
 export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient): ToolDefinition[] {
@@ -498,5 +721,6 @@ export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient)
 		createNvimConfigTool(client),
 		createNvimSearchTool(cwd, client),
 		createNvimFindFilesTool(cwd, client),
+		createNvimFindReplaceAllTool(cwd, client),
 	];
 }

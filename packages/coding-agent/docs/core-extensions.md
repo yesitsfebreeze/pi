@@ -84,7 +84,7 @@ list.
 
 The `nvim-surface` inline extension only injects context. The nvim tools
 themselves — `nvim_state`, `nvim_read_buf`, `buffers`, `nvim_search`,
-`nvim_find_files`, `nvim_find_replace`, `nvim_keys`, `nvim_terminal_send`,
+`nvim_find_files`, `nvim_find_replace`, `nvim_find_replace_all`, `nvim_keys`, `nvim_terminal_send`,
 `nvim_highlight`, `nvim_virtual_text`, `nvim_config`, and the LSP tools
 `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_diagnostics`,
 `ts_query` — are registered by `createNvimToolDefinitions()` from `main.ts`

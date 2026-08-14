@@ -5261,29 +5261,8 @@ export class InteractiveMode {
 			const toolNames = ["read", "write", "edit", "grep", "find", "ls"] as const;
 			const nvimOps = nvimToolOps(() => (client.connected ? client : undefined));
 			for (const name of toolNames) {
-				const options: ToolsOptions = {};
-				switch (name) {
-					case "read":
-						options.read = { operations: nvimOps.read };
-						break;
-					case "write":
-						options.write = { operations: nvimOps.write };
-						break;
-					case "edit":
-						options.edit = { operations: nvimOps.edit };
-						break;
-					case "grep":
-						options.grep = { operations: nvimOps.grep };
-						break;
-					case "find":
-						options.find = { operations: nvimOps.find };
-						break;
-					case "ls":
-						options.ls = { operations: nvimOps.ls };
-						break;
-				}
-				const cwd = process.cwd();
-				const def = createToolDefinition(name, cwd, options);
+				const options: ToolsOptions = { [name]: { operations: nvimOps[name] } };
+				const def = createToolDefinition(name, process.cwd(), options);
 				this.session.registerAdditionalTool(def);
 			}
 
@@ -5339,6 +5318,7 @@ export class InteractiveMode {
 				"nvim_config",
 				"nvim_search",
 				"nvim_find_files",
+				"nvim_find_replace_all",
 			];
 			const notice =
 				`nvim connected. All file operations (read, write, edit, grep, find, ls) ` +
@@ -5455,10 +5435,44 @@ export class InteractiveMode {
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 		const contextPercent = contextUsage?.percent ?? null;
 
-		// Compute cumulative token totals from all entries
+		// Cumulative token totals: memoized on (manager, revision) — the walk is
+		// O(entries) and the status line renders ~12.5×/s while working, but
+		// entries are append-only, so the totals only change when one is added.
+		const totals = this._cumulativeTokens();
+
+		return {
+			version: this.version,
+			updateAvailable: this.updateAvailable,
+			cwd: this.sessionManager.getCwd(),
+			gitStatus: this.getGitStatus(),
+			contextPercent,
+			contextWindow,
+			inputTokens: totals.input,
+			outputTokens: totals.output,
+			sessionCost: this.cumulativeSessionCost,
+			autoCompact: this.session.autoCompactionEnabled,
+			working: this.workingVisible,
+			extensionStatuses: [...this.extensionStatuses.values()],
+			now: Date.now(),
+		};
+	}
+
+	private _tokenTotalsCache: { manager: unknown; revision: number; input: number; output: number } = {
+		manager: null,
+		revision: -1,
+		input: 0,
+		output: 0,
+	};
+
+	/** Cumulative token totals across all entries, recomputed only when the session grows. */
+	private _cumulativeTokens(): { input: number; output: number } {
+		const manager = this.sessionManager;
+		const cached = this._tokenTotalsCache;
+		if (cached.manager === manager && cached.revision === manager.revision) return cached;
+
 		let inputTokens = 0;
 		let outputTokens = 0;
-		for (const entry of this.sessionManager.getEntries()) {
+		for (const entry of manager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				const u = entry.message.usage;
 				inputTokens += (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
@@ -5472,21 +5486,11 @@ export class InteractiveMode {
 			}
 		}
 
-		return {
-			version: this.version,
-			updateAvailable: this.updateAvailable,
-			cwd: this.sessionManager.getCwd(),
-			gitStatus: this.getGitStatus(),
-			contextPercent,
-			contextWindow,
-			inputTokens,
-			outputTokens,
-			sessionCost: this.cumulativeSessionCost,
-			autoCompact: this.session.autoCompactionEnabled,
-			working: this.workingVisible,
-			extensionStatuses: [...this.extensionStatuses.values()],
-			now: Date.now(),
-		};
+		cached.manager = manager;
+		cached.revision = manager.revision;
+		cached.input = inputTokens;
+		cached.output = outputTokens;
+		return cached;
 	}
 
 	/** Extension status slots, keyed by the key passed to ctx.ui.setStatus(). */

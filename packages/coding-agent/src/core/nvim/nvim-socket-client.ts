@@ -37,6 +37,11 @@ export interface NvimSocketOptions {
 	onClose?: () => void;
 }
 
+/** Escape a string for safe embedding inside a Lua double-quoted string. */
+export function luaQuote(s: string): string {
+	return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+}
+
 export class NvimSocketClient {
 	#options: NvimSocketOptions;
 	#connected = true;
@@ -92,7 +97,7 @@ export class NvimSocketClient {
 
 	/** Escape a string for safe embedding inside a Lua double-quoted string. */
 	static #luaQuote(s: string): string {
-		return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+		return luaQuote(s);
 	}
 
 	// ── High-level buffer operations ──
@@ -642,8 +647,14 @@ return vim.json.encode({
 		const q = NvimSocketClient.#luaQuote;
 		return this.evalLuaJson<NvimBufferRead>(`
 local file, s, e = "${q(name)}", ${startLine ?? "nil"}, ${endLine ?? "nil"}
+-- bufadd/bufload first so any path on disk can be read, not just open buffers
+-- (vimgrep leaves listed-but-unloaded buffers behind; bufload handles those too).
 local b = vim.fn.bufnr(file)
-if b == -1 then return vim.json.encode({ error = "Buffer not found: " .. file }) end
+if b == -1 then b = vim.fn.bufadd(file) end
+if b > 0 and not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
+if b == -1 or not vim.api.nvim_buf_is_loaded(b) then
+  return vim.json.encode({ error = "Buffer not found: " .. file })
+end
 local total = vim.api.nvim_buf_line_count(b)
 local ls = (type(s) == "number") and s or 1
 local le = (type(e) == "number") and e or total
@@ -661,8 +672,14 @@ return vim.json.encode({ lines = lines, total_lines = total })
 		const q = NvimSocketClient.#luaQuote;
 		return this.evalLuaJson<NvimFindReplaceResult>(`
 local file, old_str, new_str = "${q(name)}", "${q(oldStr)}", "${q(newStr)}"
+-- bufadd/bufload first: nvim_find_replace must work on any file on disk,
+-- not only buffers already open (vimgrep leaves unloaded listed buffers).
 local b = vim.fn.bufnr(file)
-if b == -1 then return vim.json.encode({ error = "Buffer not found: " .. file }) end
+if b == -1 then b = vim.fn.bufadd(file) end
+if b > 0 and not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
+if b == -1 or not vim.api.nvim_buf_is_loaded(b) then
+  return vim.json.encode({ error = "Buffer not found: " .. file })
+end
 local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
 local text = table.concat(lines, "\\n")
 local s, e = string.find(text, old_str, 1, true)
