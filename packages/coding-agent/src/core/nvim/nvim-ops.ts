@@ -6,6 +6,7 @@
  * This allows the same session to work with or without nvim.
  */
 
+import type { BashOperations } from "../tools/bash.ts";
 import type { EditOperations } from "../tools/edit.ts";
 import type { FindOperations } from "../tools/find.ts";
 import type { GrepOperations } from "../tools/grep.ts";
@@ -21,7 +22,6 @@ import {
 	createNvimWriteOps,
 } from "./nvim-operations.ts";
 import type { NvimSocketClient } from "./nvim-socket-client.ts";
-import type { BashOperations } from "../tools/bash.ts";
 
 type ClientGetter = () => NvimSocketClient | undefined;
 

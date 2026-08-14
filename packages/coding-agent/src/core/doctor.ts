@@ -548,4 +548,3 @@ export async function runDoctorPass(cwd: string): Promise<DoctorPassReport> {
 
 	return { report: lines.join("\n"), ok: fails === 0 };
 }
-
