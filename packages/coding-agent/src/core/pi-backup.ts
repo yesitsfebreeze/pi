@@ -171,12 +171,16 @@ export async function pushPiBackup(cwd: string): Promise<BackupResult> {
 		}
 
 		const tree = (await git(cwd, ["write-tree"], env)).stdout.trim();
-		const parent = (await git(cwd, ["rev-parse", ORPHAN_BRANCH])).stdout.trim();
 		const parentTree = (await git(cwd, ["rev-parse", `${ORPHAN_BRANCH}^{tree}`])).stdout.trim();
 		if (tree === parentTree) {
 			return { ok: true, text: `nothing new to back up — ${ORPHAN_BRANCH} branch is current` };
 		}
-		const commit = (await git(cwd, ["commit-tree", tree, "-p", parent, "-m", "chore: pi backup"], env)).stdout.trim();
+		// No parent: the branch is a mirror — each push replaces it with a
+		// single snapshot commit. Appending a commit per sync stored the whole
+		// 16 MB kern LMDB per sync, growing .git by gigabytes and making the
+		// auto-sync pushes hang for minutes (git processes pile up across
+		// sessions until fork EAGAIN takes the user's shell down).
+		const commit = (await git(cwd, ["commit-tree", tree, "-m", "chore: pi backup"], env)).stdout.trim();
 		await git(cwd, ["update-ref", `refs/heads/${ORPHAN_BRANCH}`, commit]);
 	} finally {
 		rmSync(idx, { force: true });
