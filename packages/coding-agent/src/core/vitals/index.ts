@@ -7,9 +7,15 @@
 //   level  — RSS against a hard ceiling, or growth against this session's own
 //            baseline. Escalates ok → warn → crit, notifies on each escalation
 //            and re-nags at crit.
-//   trend  — least-squares slope over the recent window, in MB/min, with the
-//            projected time to the crit line. A slow monotonic climb trips
+//   trend  — least-squares slope over the post-warmup window, in MB/min, with
+//            the projected time to the crit line. A slow monotonic climb trips
 //            this long before it trips a threshold.
+//
+// Startup warmup is not a leak: module load, context build and cache warmup
+// climb RSS hard in the first minutes of every session. The first few samples
+// are excluded from the trend and the growth baseline latches after them, so a
+// normal session start reads as flat instead of "+200MB in 2 minutes".
+//
 //   procs  — live child processes counted from the event loop's active
 //            handles. The oilrig counted detached/unref'd children via /proc;
 //            core counts what the event loop holds (a launch/mem child is
@@ -32,7 +38,11 @@ export interface VitalSample {
 const SAMPLE_MS = 30_000;
 const WINDOW = 20; // samples kept — 10 minutes at the default cadence
 const RENAG_MS = 15 * 60_000;
-const MIN_SPAN_MS = 1000; // below this wall-clock span there is no trend to report
+// Startup warmup: module load, context build and cache warmup make the first
+// minutes climb hard even with no leak. Samples before this index are excluded
+// from the trend and the growth baseline latches after them.
+const WARMUP_SAMPLES = 4; // ~2 minutes at the default cadence
+const MIN_SPAN_MS = 60_000; // below this wall-clock span there is no trend to report
 
 const envMb = (k: string, d: number): number => {
 	const v = Number(process.env[k]);
@@ -82,30 +92,47 @@ export function procFloor(): number {
 }
 
 /**
- * MB per minute over the retained window; least squares, so one GC dip does
- * not read as a downward trend. A slope needs a baseline in time as well as
- * points: samples crowded into a few milliseconds divide by a near-zero span
- * and report millions of MB/min from ordinary jitter, so below a one-second
- * span there is no trend to report.
+ * Least-squares slope (MB/min) over a sample slice; one GC dip does not read
+ * as a downward trend. A slope needs a baseline in time as well as points:
+ * samples crowded into a few milliseconds divide by a near-zero span and
+ * report millions of MB/min from ordinary jitter, so below a one-minute span
+ * there is no trend to report.
  */
-export function trend(): number {
-	if (samples.length < 4) return 0;
-	const t0 = samples[0].t;
-	if ((samples.at(-1)?.t ?? t0) - t0 < MIN_SPAN_MS) return 0;
+function slopeOf(slice: VitalSample[]): number {
+	if (slice.length < 4) return 0;
+	const t0 = slice[0].t;
+	if ((slice.at(-1)?.t ?? t0) - t0 < MIN_SPAN_MS) return 0;
 	let sx = 0;
 	let sy = 0;
 	let sxx = 0;
 	let sxy = 0;
-	for (const s of samples) {
+	for (const s of slice) {
 		const x = (s.t - t0) / 60_000;
 		sx += x;
 		sy += s.rss;
 		sxx += x * x;
 		sxy += x * s.rss;
 	}
-	const n = samples.length;
+	const n = slice.length;
 	const denom = n * sxx - sx * sx;
 	return denom === 0 ? 0 : (n * sxy - sx * sy) / denom;
+}
+
+/**
+ * MB per minute over the post-warmup window; least squares. The startup
+ * warmup samples are excluded — module load and context build are not a leak.
+ * Once the window has slid past warmup (10 minutes in), this is the plain
+ * recent-window slope.
+ */
+export function trend(): number {
+	const slice = samples.slice(Math.min(WARMUP_SAMPLES, samples.length));
+	return slopeOf(slice);
+}
+
+/** Slope over the recent half of the post-warmup window — is growth sustained? */
+function recentTrend(): number {
+	const slice = samples.slice(Math.min(WARMUP_SAMPLES, samples.length));
+	return slopeOf(slice.slice(Math.floor(slice.length / 2)));
 }
 
 export function current(): VitalSample {
@@ -113,8 +140,9 @@ export function current(): VitalSample {
 }
 
 export function growth(): number {
-	// The session baseline is latched by tick(); direct-sample callers (tests)
-	// fall back to the first sample so growth is still honest.
+	// The session baseline is latched by tick() at the first post-warmup sample;
+	// direct-sample callers (tests) fall back to the first sample so growth is
+	// still honest.
 	const base = baseline || samples[0]?.rss || 0;
 	return Math.max(0, current().rss - base);
 }
@@ -127,10 +155,16 @@ export function classify(): Level {
 	return "ok";
 }
 
-/** Minutes until the projected RSS reaches the crit ceiling, or undefined when flat/past. */
+/**
+ * Minutes until the projected RSS reaches the crit ceiling, or undefined when
+ * flat/past. Only extrapolates while growth is sustained into the recent half
+ * of the window: a one-off burst that has already flattened must not project
+ * to the ceiling.
+ */
 export function etaMinutes(): number | undefined {
 	const slope = trend();
 	if (slope <= 1) return undefined;
+	if (recentTrend() < 1) return undefined;
 	const room = CRIT_MB() - current().rss;
 	if (room <= 0) return 0;
 	return Math.round(room / slope);
@@ -144,7 +178,7 @@ export function advice(): string {
 		return `vitals: ${procFloor()} child processes live across the last 3 samples — something is shelling out per item and the session will stall until it drains.`;
 	}
 	const lines = [
-		`vitals: session memory ${fmt(c.rss)} rss (heap ${fmt(c.heap)}), +${fmt(growth())} since session start, ${trend() >= 0 ? "+" : ""}${trend().toFixed(0)}MB/min`,
+		`vitals: session memory ${fmt(c.rss)} rss (heap ${fmt(c.heap)}), +${fmt(growth())} growth from baseline, ${trend() >= 0 ? "+" : ""}${trend().toFixed(0)}MB/min`,
 	];
 	if (eta !== undefined && eta <= 120) lines.push(`at this rate it hits ${fmt(CRIT_MB())} in ~${eta} min`);
 	lines.push(
@@ -199,7 +233,9 @@ export function evaluateVitals(): void {
 export function tick(): void {
 	samples.push(sample());
 	if (samples.length > WINDOW) samples.shift();
-	if (!baseline) baseline = samples[0].rss;
+	// Latch the baseline at the first post-warmup sample: growth is measured
+	// from the settled session, not from the empty process at boot.
+	if (!baseline && samples.length > WARMUP_SAMPLES) baseline = samples[WARMUP_SAMPLES].rss;
 	evaluateVitals();
 }
 
@@ -233,7 +269,7 @@ export function createVitalsInlineExtension(): InlineExtension {
 			pi.on("session_start", (_e: unknown, ctx: ExtensionContext) => {
 				ui = ctx?.ui;
 				resetVitals();
-				tick(); // baseline
+				tick(); // first sample — the baseline latches after the warmup window
 				timer = setInterval(tick, SAMPLE_MS);
 				timer.unref?.();
 			});

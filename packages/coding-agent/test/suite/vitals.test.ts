@@ -26,23 +26,35 @@ function push(rss: number, t = Date.now(), procs = 0): void {
 }
 
 describe("vitals signals", () => {
-	it("trend is flat below four samples or a one-second span", () => {
+	it("trend is flat below four post-warmup samples or a one-minute span", () => {
 		resetVitals();
 		expect(trend()).toBe(0);
 		push(100, 0);
 		push(100, 10);
 		push(100, 20);
-		expect(trend()).toBe(0); // < 4 samples
+		expect(trend()).toBe(0); // < 4 post-warmup samples
 		push(100, 25);
-		expect(trend()).toBe(0); // span < 1s → no trend
+		expect(trend()).toBe(0); // span < 1 min → no trend
 	});
 
-	it("trend measures MB/min by least squares over the window", () => {
+	it("trend measures MB/min by least squares over the post-warmup window", () => {
 		resetVitals();
 		const t0 = Date.now();
-		// +1000MB over 10 minutes = +100 MB/min
-		for (let i = 0; i <= 10; i++) push(500 + i * 100, t0 + i * 60_000);
+		// 4 flat warmup samples, then a +100 MB/min line
+		for (let i = 0; i < 4; i++) push(500, t0 + i * 60_000);
+		for (let i = 4; i <= 10; i++) push(500 + (i - 4) * 100, t0 + i * 60_000);
 		expect(trend()).toBeCloseTo(100, 0);
+	});
+
+	it("trend ignores the startup warmup burst — a burst then plateau reads flat", () => {
+		resetVitals();
+		const t0 = Date.now();
+		// Startup burst: RSS climbs 250→490 inside the warmup window.
+		for (let i = 0; i < 4; i++) push(250 + i * 80, t0 + i * 30_000);
+		// Then flat for the rest of the window — not a leak.
+		for (let i = 4; i <= 20; i++) push(490, t0 + i * 30_000);
+		expect(trend()).toBeLessThan(5);
+		expect(etaMinutes()).toBeUndefined();
 	});
 
 	it("a flat line reads as zero trend", () => {
@@ -83,6 +95,26 @@ describe("vitals signals", () => {
 		const eta = etaMinutes();
 		expect(eta).not.toBeUndefined();
 		expect(eta).toBeLessThanOrEqual(20);
+	});
+
+	it("etaMinutes is undefined when a burst has flattened — not a sustained leak", () => {
+		resetVitals();
+		const t0 = Date.now();
+		for (let i = 0; i < 4; i++) push(300, t0 + i * 30_000); // warmup flat
+		for (let i = 4; i <= 7; i++) push(300 + (i - 4) * 150, t0 + i * 30_000); // one-off burst +600
+		for (let i = 8; i <= 20; i++) push(900, t0 + i * 30_000); // plateau
+		expect(etaMinutes()).toBeUndefined();
+		expect(advice()).not.toMatch(/hits/);
+	});
+
+	it("etaMinutes projects while growth is sustained into the recent half", () => {
+		resetVitals();
+		const t0 = Date.now();
+		for (let i = 0; i < 4; i++) push(400, t0 + i * 30_000); // warmup flat
+		for (let i = 4; i <= 20; i++) push(400 + (i - 4) * 50, t0 + i * 30_000); // +100 MB/min sustained
+		const eta = etaMinutes();
+		expect(eta).not.toBeUndefined();
+		expect(eta).toBeLessThanOrEqual(30);
 	});
 
 	it("etaMinutes is undefined on a flat trend", () => {
