@@ -346,102 +346,6 @@ export function createIssueReporterExtension(): InlineExtension {
 }
 
 // ---------------------------------------------------------------------------
-// reflex — measured tool surface (usage ledger + verdicts over the band)
-// ---------------------------------------------------------------------------
-
-export function createReflexExtension(): InlineExtension {
-	return createReflexInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// rigor — automated post-pass verification
-// ---------------------------------------------------------------------------
-
-export function createRigorInlineExtension(): InlineExtension {
-	return { name: "rigor", factory: createRigorExtension() };
-}
-
-// ---------------------------------------------------------------------------
-// simplify — post-change follow-up (check/test/persona review via sub-agents)
-// ---------------------------------------------------------------------------
-
-export function createSimplifyInlineExtension(): InlineExtension {
-	return { name: "simplify", factory: createSimplifyExtension() };
-}
-
-// ---------------------------------------------------------------------------
-// slim — turn distill: every tool-using turn leaves one line in memory
-// ---------------------------------------------------------------------------
-
-export function createSlimExtension(): InlineExtension {
-	return createSlimInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// forest — isolated git worktrees + write-scope enforcement
-// ---------------------------------------------------------------------------
-
-export function createForestInlineExtension(): InlineExtension {
-	return createForestExtension();
-}
-
-// ---------------------------------------------------------------------------
-// layers — develop-on-refs with provenance, test-then-merge
-// ---------------------------------------------------------------------------
-
-export function createLayersInlineExtension(): InlineExtension {
-	return createLayersExtension();
-}
-
-// ---------------------------------------------------------------------------
-// crew — subagent dispatch
-// ---------------------------------------------------------------------------
-
-export function createCrewInlineExtension(): InlineExtension {
-	return createCrewExtension();
-}
-
-// ---------------------------------------------------------------------------
-// gantt — file-per-ticket routine board + self-sustaining /gantt work loop
-// ---------------------------------------------------------------------------
-
-export function createGanttExtension(): InlineExtension {
-	return createGanttInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// btw — the side channel: read-only subagent in a resumable session + index
-// ---------------------------------------------------------------------------
-
-export function createBtwExtension(): InlineExtension {
-	return createBtwInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// crawl — web research / topic scoring (local store, no external CLI)
-// ---------------------------------------------------------------------------
-
-export function createCrawlExtension(): InlineExtension {
-	return createCrawlInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// mem — live process memory introspection + valgrind runner
-// ---------------------------------------------------------------------------
-
-export function createMemExtension(): InlineExtension {
-	return createMemInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
-// recipes — executable knowledge base (port of justdown concept, no jd binary)
-// ---------------------------------------------------------------------------
-
-export function createRecipesExtension(): InlineExtension {
-	return createRecipesInlineExtension();
-}
-
-// ---------------------------------------------------------------------------
 // persona — agent identity
 // ---------------------------------------------------------------------------
 
@@ -493,24 +397,24 @@ export function getCoreInlineExtensions(): InlineExtension[] {
 		createVitalsExtension(),
 		createModelLedgerExtension(),
 		createSearchGuardExtension(),
-		createRigorInlineExtension(),
-		createSimplifyInlineExtension(),
-		createReflexExtension(),
-		createSlimExtension(),
-		createForestInlineExtension(),
-		createLayersInlineExtension(),
+		{ name: "rigor", factory: createRigorExtension() },
+		{ name: "simplify", factory: createSimplifyExtension() },
+		createReflexInlineExtension(),
+		createSlimInlineExtension(),
+		createForestExtension(),
+		createLayersExtension(),
 		createLaunchExtension(),
 		createUntilExtension(),
 		createIssueReporterExtension(),
 		createMemoryInlineExtension(),
-		createCrewInlineExtension(),
+		createCrewExtension(),
 		createPiBackupExtension(),
 		createInitExtension(),
-		createGanttExtension(),
-		createBtwExtension(),
-		createCrawlExtension(),
-		createRecipesExtension(),
-		createMemExtension(),
+		createGanttInlineExtension(),
+		createBtwInlineExtension(),
+		createCrawlInlineExtension(),
+		createRecipesInlineExtension(),
+		createMemInlineExtension(),
 		createInteractExtension(),
 		createNvimSurfaceExtension(),
 	];
