@@ -200,13 +200,19 @@ export function createMemoryInlineExtension(): {
 
 				// 2. Memory hits for current input
 				if (lastInput.trim() && lastInput !== lastQueriedInput) {
-					const hits = await queryThoughts(lastInput, 5);
+					const res = await queryThoughts(lastInput, 5);
 					lastQueriedInput = lastInput;
-					if (hits.length > 0) {
-						const hitsText = hits.map((h) => `- ${h.text.slice(0, 300)} (${h.id})`).join("\n");
-						if (hitsText !== lastHits) {
-							lastHits = hitsText;
-							blocks.push(autoInjectedBlock(`# Kern memory (relevant to current task)\n${hitsText}`));
+					if (res.hits.length > 0) {
+						const hitsText = res.hits.map((h) => `- ${h.text.slice(0, 300)} (${h.id})`).join("\n");
+						// The graph chains kern already computed for this query — surface
+						// them so injection carries structure, not just a flat top-K.
+						const chainsText = res.chains.length
+							? `\n# Kern connections\n${res.chains.slice(0, 3).join("\n\n")}`
+							: "";
+						const blockText = `${hitsText}${chainsText}`;
+						if (blockText !== lastHits) {
+							lastHits = blockText;
+							blocks.push(autoInjectedBlock(`# Kern memory (relevant to current task)\n${blockText}`));
 						}
 					}
 				}

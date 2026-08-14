@@ -24,22 +24,22 @@ describe("memory store (kern wrapper)", () => {
 	});
 
 	it("storeDecision returns id when kern is present, undefined otherwise", async () => {
-		const id = await storeDecision("test decision", "we chose X", 0.9);
+		const res = await storeDecision("test decision", "we chose X", 0.9);
 		if (SKIP) {
-			expect(id).toBeUndefined();
+			expect(res).toBeUndefined();
 		} else {
-			expect(id).toBeTruthy();
-			expect(typeof id === "string").toBe(true);
+			expect(res).toBeTruthy();
+			expect(typeof res!.id === "string").toBe(true);
 		}
 	});
 
 	it("storeObservation returns id when kern is present, undefined otherwise", async () => {
-		const id = await storeObservation("test obs", "noted: Y happens");
+		const res = await storeObservation("test obs", "noted: Y happens");
 		if (SKIP) {
-			expect(id).toBeUndefined();
+			expect(res).toBeUndefined();
 		} else {
-			expect(id).toBeTruthy();
-			expect(typeof id === "string").toBe(true);
+			expect(res).toBeTruthy();
+			expect(typeof res!.id === "string").toBe(true);
 		}
 	});
 
@@ -58,40 +58,43 @@ describe("memory store (kern wrapper)", () => {
 	});
 
 	it("ingestOne returns id when kern is present, undefined otherwise", async () => {
-		const id = await ingestOne("test single fact");
+		const res = await ingestOne("test single fact");
 		if (SKIP) {
-			expect(id).toBeUndefined();
+			expect(res).toBeUndefined();
 		} else {
-			expect(typeof id === "string" || id === "ok").toBe(true);
+			expect(res).toBeTruthy();
+			expect(typeof res!.id === "string").toBe(true);
 		}
 	});
 
-	it("queryThoughts returns results when kern is present, empty otherwise", async () => {
-		const results = await queryThoughts("something", 5);
+	it("queryThoughts returns hits when kern is present, empty otherwise", async () => {
+		const res = await queryThoughts("something", 5);
 		if (SKIP) {
-			expect(results.length).toBe(0);
+			expect(res.hits.length).toBe(0);
 		} else {
-			expect(Array.isArray(results)).toBe(true);
+			expect(Array.isArray(res.hits)).toBe(true);
+			expect(Array.isArray(res.chains)).toBe(true);
 			// May or may not have results depending on what's in the graph
 		}
 	});
 
 	it("queryThoughts returns empty for empty query", async () => {
-		const results = await queryThoughts("", 5);
-		expect(results.length).toBe(0);
+		const res = await queryThoughts("", 5);
+		expect(res.hits.length).toBe(0);
 	});
 
 	it("queryThoughts returns empty for short query", async () => {
-		const results = await queryThoughts("ab", 5);
-		expect(results.length).toBe(0);
+		const res = await queryThoughts("ab", 5);
+		expect(res.hits.length).toBe(0);
 	});
 
 	it("forgetSource does not throw when kern is absent", async () => {
 		const n = await forgetSource("nonexistent-source");
 		if (SKIP) {
-			expect(n).toBe(0);
+			expect(n.removed).toBe(0);
 		} else {
-			expect(typeof n === "number").toBe(true);
+			expect(typeof n.removed === "number").toBe(true);
+			expect(typeof n.timedOut === "boolean").toBe(true);
 		}
 	});
 

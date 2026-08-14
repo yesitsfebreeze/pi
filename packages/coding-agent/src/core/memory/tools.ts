@@ -32,12 +32,15 @@ export const KERN_INGEST_TOOL: ToolDefinition = {
 		const p = (params ?? {}) as Record<string, unknown>;
 		const text = String(p.text ?? "");
 		if (!text.trim()) return err("text required");
-		const id = await ingestOne(text, {
+		const res = await ingestOne(text, {
 			objectId: typeof p.objectId === "string" ? p.objectId : undefined,
 			source: typeof p.source === "string" ? p.source : undefined,
 		});
-		if (!id) return err("kern not available — install with `cargo install kern`");
-		return out(`[kern_ingest] ${id}: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`);
+		if (!res) return err("kern not available — install with `cargo install kern`");
+		if (res.timedOut)
+			return err("kern ingest timed out — the one-shot CLI pays ~4.5s store load; retry (kern F4 removes this)");
+		if (!res.id) return err("kern ingest failed — no id returned");
+		return out(`[kern_ingest] ${res.id}: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`);
 	},
 };
 
@@ -60,11 +63,14 @@ export const KERN_QUERY_TOOL: ToolDefinition = {
 		const q = String(p.query ?? "");
 		if (!q.trim()) return err("query required");
 		const limit = typeof p.limit === "number" && p.limit > 0 ? p.limit : 10;
-		const results = await queryThoughts(q, limit);
-		if (results.length === 0) return out(`[kern_query] no results for "${q}"`);
-		const lines = results.map(
+		const res = await queryThoughts(q, limit);
+		if (res.timedOut)
+			return err("kern query timed out — the one-shot CLI pays ~4.5s store load; retry (kern F4 removes this)");
+		if (res.hits.length === 0) return out(`[kern_query] no results for "${q}"`);
+		const lines = res.hits.map(
 			(r, i) => `${i + 1}. ${r.text.slice(0, 200)}${r.text.length > 200 ? "…" : ""}${r.id ? ` (${r.id})` : ""}`,
 		);
+		if (res.chains.length) lines.push("", "--- Connections ---", ...res.chains.slice(0, 3));
 		return out(lines.join("\n"));
 	},
 };
@@ -108,13 +114,19 @@ export const KERN_FORGET_TOOL: ToolDefinition = {
 	promptSnippet: "Remove thoughts from kern",
 	parameters: Type.Object({
 		source: Type.String({ description: "Forget all thoughts matching this source prefix" }),
+		force: Type.Optional(
+			Type.Boolean({
+				description: "Also remove Facts (kern guards them by default). Needed for most auto-ingested observations.",
+			}),
+		),
 	}) as any,
 	async execute(_id, params) {
 		const p = (params ?? {}) as Record<string, unknown>;
 		const source = String(p.source ?? "");
 		if (!source) return err("source required");
-		const n = await forgetSource(source);
-		return out(`[kern_forget] removed thoughts with source "${source}" — ${n}`);
+		const res = await forgetSource(source, p.force === true);
+		if (res.timedOut) return err("kern forget timed out — the one-shot CLI pays ~4.5s store load; retry");
+		return out(`[kern_forget] removed ${res.removed} thoughts with source "${source}"`);
 	},
 };
 
