@@ -211,17 +211,30 @@ export async function ingestOne(
 	try {
 		const args = ["ingest", "--file", file];
 		if (opts?.objectId) args.push("--object-id", opts.objectId);
-		const { stdout } = await execFileP(KERN_BIN, args, { timeout: TIMEOUT, encoding: "utf8", env: kernEnv() });
+		let res = await ingestFile(args, TIMEOUT);
+		// kern's ingest CLI has no --object-id yet (RECALL_PLAN follow-up): a
+		// parse rejection — any non-timeout failure — retries plain so the write
+		// always lands. Object-id semantics arrive with kern support.
+		if (!res.id && !res.timedOut && opts?.objectId) {
+			res = await ingestFile(["ingest", "--file", file], TIMEOUT);
+		}
+		return res;
+	} finally {
+		try {
+			rmSync(file, { force: true });
+		} catch {}
+	}
+}
+
+async function ingestFile(args: string[], timeoutMs: number): Promise<IngestResult> {
+	try {
+		const { stdout } = await execFileP(KERN_BIN, args, { timeout: timeoutMs, encoding: "utf8", env: kernEnv() });
 		const out = stdout ?? "";
 		if (out.includes("ingested")) return { id: "ok", timedOut: false };
 		const idMatch = out.match(/id:\s*(\S+)/i);
 		return { id: idMatch?.[1] ?? undefined, timedOut: false };
 	} catch (e) {
 		return { id: undefined, timedOut: isTimeout(e) };
-	} finally {
-		try {
-			rmSync(file, { force: true });
-		} catch {}
 	}
 }
 
