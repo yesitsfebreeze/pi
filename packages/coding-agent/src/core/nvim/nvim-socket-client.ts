@@ -42,6 +42,77 @@ export function luaQuote(s: string): string {
 	return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
 }
 
+/**
+ * Lua: position-params builders for LSP requests on *any* buffer, not just
+ * the current one. Resolves the offset encoding from the buffer's first
+ * attached client and converts byte columns to utf-16 characters — the same
+ * conversion vim.lsp.util.make_position_params does internally, but that
+ * helper is hard-wired to the current window/buffer.
+ *
+ * line/col are 0-indexed byte positions (the nvim cursor convention); when
+ * either is nil the current cursor position is used (or {0,0} for a buffer
+ * that is not displayed).
+ */
+function positionParamsLua(): string {
+	return `
+local function lsp_offset_encoding(bufnr)
+  local clients = vim.lsp.get_clients({ bufnr = bufnr })
+  if clients[1] and clients[1].offset_encoding then return clients[1].offset_encoding end
+  return "utf-16"
+end
+local function to_lsp_col(bufnr, line, byte_col)
+  if lsp_offset_encoding(bufnr) == "utf-16" then
+    local text = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
+    -- str_utfindex throws "index out of range" past the line end; clamp so a
+    -- caller-supplied col beyond EOL resolves to end-of-line instead of erroring.
+    local ok, u16 = pcall(vim.str_utfindex, text, math.min(byte_col, #text))
+    if ok then return u16 end
+  end
+  return byte_col
+end
+local function lsp_position(bufnr, line, col)
+  if line ~= nil and col ~= nil then
+    return { line = line, character = to_lsp_col(bufnr, line, col) }
+  end
+  if bufnr == vim.api.nvim_get_current_buf() then
+    local c = vim.api.nvim_win_get_cursor(0)
+    return { line = c[1] - 1, character = to_lsp_col(bufnr, c[1] - 1, c[2]) }
+  end
+  return { line = 0, character = 0 }
+end
+local function make_position_params(bufnr, line, col)
+  return {
+    textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+    position = lsp_position(bufnr, line, col),
+  }
+end
+local function make_range_params(bufnr, line, col)
+  local pos = lsp_position(bufnr, line, col)
+  return { textDocument = { uri = vim.uri_from_bufnr(bufnr) }, range = { start = pos, ["end"] = pos } }
+end
+`;
+}
+
+/**
+ * Lua: resolve a buffer name (or current buffer when absent) to a loaded
+ * bufnr, bufadd/bufload'ing files that exist on disk but are not open.
+ */
+function resolveBufnrLua(nameArg: string): string {
+	return `
+local bufnr
+if ${nameArg} and ${nameArg} ~= "" then
+  bufnr = vim.fn.bufnr(${nameArg})
+  if bufnr == -1 then bufnr = vim.fn.bufadd(${nameArg}) end
+  if bufnr > 0 and not vim.api.nvim_buf_is_loaded(bufnr) then vim.fn.bufload(bufnr) end
+else
+  bufnr = vim.api.nvim_get_current_buf()
+end
+if bufnr == -1 then
+  return vim.json.encode({ error = "Buffer not found: " .. tostring(${nameArg}) })
+end
+`;
+}
+
 export class NvimSocketClient {
 	#options: NvimSocketOptions;
 	#connected = true;
@@ -198,35 +269,27 @@ return vim.json.encode(out)
 		}
 	}
 
-	/** Get LSP references for position. */
-	async getLspReferences(_name: string, _lnum: number, _col: number): Promise<NvimLspLocation[]> {
+	/** Get LSP references for position (target buffer; line/col 0-indexed byte positions). */
+	async getLspReferences(
+		name: string | undefined,
+		line: number | undefined,
+		col: number | undefined,
+	): Promise<NvimLspLocation[]> {
 		try {
+			const q = NvimSocketClient.#luaQuote;
+			const nameArg = name ? `"${q(name)}"` : "nil";
 			return await this.evalLuaJson<NvimLspLocation[]>(`
-local params = vim.lsp.util.make_position_params()
-local results = vim.lsp.buf_request_sync(0, 'textDocument/references', params, 1000)
+${resolveBufnrLua(nameArg)}
+${positionParamsLua()}
+local params = make_position_params(bufnr, ${line ?? "nil"}, ${col ?? "nil"})
+local results = vim.lsp.buf_request_sync(bufnr, 'textDocument/references', params, 1000)
 local out = {}
-for _, resp in ipairs(results or {}) do
-  if resp.result then
-    for _, loc in ipairs(resp.result) do
-      if loc.uri and loc.range then table.insert(out, loc) end
-    end
-  end
-end
-return vim.json.encode(out)
-`);
-		} catch {
-			return [];
-		}
-	}
-
-	/** Get LSP definition for position. */
-	async getLspDefinition(_name: string, _lnum: number, _col: number): Promise<NvimLspLocation[]> {
-		try {
-			return await this.evalLuaJson<NvimLspLocation[]>(`
-local params = vim.lsp.util.make_position_params()
-local results = vim.lsp.buf_request_sync(0, 'textDocument/definition', params, 1000)
-local out = {}
-for _, resp in ipairs(results or {}) do
+-- buf_request_sync returns a MAP keyed by client id ({[2]={result=...}}), not a
+-- list — ipairs finds nothing when ids are non-contiguous (e.g. one client).
+local ids = vim.tbl_keys(results or {})
+table.sort(ids)
+for _, id in ipairs(ids) do
+  local resp = results[id]
   if resp.result then
     local locs = resp.result
     if not vim.tbl_islist(locs) then locs = { locs } end
@@ -242,17 +305,58 @@ return vim.json.encode(out)
 		}
 	}
 
-	/** Get LSP hover for position. */
+	/** Get LSP definition for position (target buffer; line/col 0-indexed byte positions). */
+	async getLspDefinition(
+		name: string | undefined,
+		line: number | undefined,
+		col: number | undefined,
+	): Promise<NvimLspLocation[]> {
+		try {
+			const q = NvimSocketClient.#luaQuote;
+			const nameArg = name ? `"${q(name)}"` : "nil";
+			return await this.evalLuaJson<NvimLspLocation[]>(`
+${resolveBufnrLua(nameArg)}
+${positionParamsLua()}
+local params = make_position_params(bufnr, ${line ?? "nil"}, ${col ?? "nil"})
+local results = vim.lsp.buf_request_sync(bufnr, 'textDocument/definition', params, 1000)
+local out = {}
+local ids = vim.tbl_keys(results or {})
+table.sort(ids)
+for _, id in ipairs(ids) do
+  local resp = results[id]
+  if resp.result then
+    local locs = resp.result
+    if not vim.tbl_islist(locs) then locs = { locs } end
+    for _, loc in ipairs(locs) do
+      if loc.uri and loc.range then table.insert(out, loc) end
+    end
+  end
+end
+return vim.json.encode(out)
+`);
+		} catch {
+			return [];
+		}
+	}
+
+	/** Get LSP hover for position (target buffer; line/col 0-indexed byte positions). */
 	async getLspHover(
-		_name: string,
-		_lnum: number,
-		_col: number,
+		name: string | undefined,
+		line: number | undefined,
+		col: number | undefined,
 	): Promise<{ contents: Array<string | { language: string; value: string }> } | null> {
 		try {
+			const q = NvimSocketClient.#luaQuote;
+			const nameArg = name ? `"${q(name)}"` : "nil";
 			const raw = await this.evalLua(`
-local params = vim.lsp.util.make_position_params()
-local results = vim.lsp.buf_request_sync(0, 'textDocument/hover', params, 1000)
-for _, resp in ipairs(results or {}) do
+${resolveBufnrLua(nameArg)}
+${positionParamsLua()}
+local params = make_position_params(bufnr, ${line ?? "nil"}, ${col ?? "nil"})
+local results = vim.lsp.buf_request_sync(bufnr, 'textDocument/hover', params, 1000)
+local ids = vim.tbl_keys(results or {})
+table.sort(ids)
+for _, id in ipairs(ids) do
+  local resp = results[id]
   if resp.result and resp.result.contents then
     return vim.json.encode(resp.result)
   end
@@ -263,6 +367,338 @@ return "null"
 			return JSON.parse(raw);
 		} catch {
 			return null;
+		}
+	}
+
+	/**
+	 * Rename the symbol at position via LSP, applying edits to the live
+	 * buffers (and writing them by default, so disk matches the editor).
+	 */
+	async renameSymbol(
+		name: string | undefined,
+		line: number | undefined,
+		col: number | undefined,
+		newName: string,
+		write = true,
+	): Promise<{ error?: string; renamed?: boolean; edits?: number; files?: string[]; wrote?: boolean }> {
+		const q = NvimSocketClient.#luaQuote;
+		const nameArg = name ? `"${q(name)}"` : "nil";
+		try {
+			return await this.evalLuaJson(`
+${resolveBufnrLua(nameArg)}
+${positionParamsLua()}
+local params = make_position_params(bufnr, ${line ?? "nil"}, ${col ?? "nil"})
+params.newName = "${q(newName)}"
+local results = vim.lsp.buf_request_sync(bufnr, 'textDocument/rename', params, 3000)
+local responded = 0
+local changed = 0
+local files = {}
+-- buf_request_sync returns a MAP keyed by client id, not a list.
+local ids = vim.tbl_keys(results or {})
+table.sort(ids)
+for _, id in ipairs(ids) do
+  local resp = results[id]
+  if resp.err then
+    return vim.json.encode({ error = resp.err.message or "LSP rename failed" })
+  end
+  if resp.result then
+    responded = responded + 1
+    -- Server may answer with { changes } (uri -> edits) or { documentChanges }.
+    local function apply(edit_uri, text_edits)
+      local b = vim.uri_to_bufnr(edit_uri)
+      if not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
+      -- nvim 0.12 requires the position_encoding arg (utf-16 vs utf-8).
+      vim.lsp.util.apply_text_edits(text_edits, b, lsp_offset_encoding(b))
+      changed = changed + #text_edits
+      local fname = vim.api.nvim_buf_get_name(b)
+      if not vim.tbl_contains(files, fname) then files[#files + 1] = fname end
+    end
+    if resp.result.changes then
+      for edit_uri, text_edits in pairs(resp.result.changes) do apply(edit_uri, text_edits) end
+    elseif resp.result.documentChanges then
+      for _, dc in ipairs(resp.result.documentChanges) do
+        if dc.textDocument and dc.edits then apply(dc.textDocument.uri, dc.edits) end
+      end
+    end
+  end
+end
+if responded == 0 then
+  return vim.json.encode({ error = "No LSP client attached to this buffer (rename needs one)" })
+end
+local wrote = false
+if ${write ? "true" : "false"} then
+  for _, f in ipairs(files) do
+    local b = vim.fn.bufnr(f)
+    if b > 0 then pcall(vim.api.nvim_buf_call, b, function() vim.cmd("silent! update") end) end
+  end
+  wrote = true
+end
+return vim.json.encode({ renamed = changed > 0, edits = changed, files = files, wrote = wrote })
+`);
+		} catch {
+			return { error: "nvim RPC failed" };
+		}
+	}
+
+	/**
+	 * List or apply LSP code actions at a position. Without `actionIndex` this
+	 * returns the numbered list of available actions; with it, the 1-based
+	 * action is applied (workspace edit + command) and touched buffers are
+	 * written.
+	 */
+	async codeActions(
+		name: string | undefined,
+		line: number | undefined,
+		col: number | undefined,
+		actionIndex?: number | string,
+	): Promise<{
+		error?: string;
+		actions?: Array<{ title: string; kind: string; is_preferred: boolean }>;
+		count?: number;
+		applied?: string;
+		kind?: string;
+		edit?: boolean;
+		command?: boolean;
+		wrote?: number;
+	}> {
+		const q = NvimSocketClient.#luaQuote;
+		const nameArg = name ? `"${q(name)}"` : "nil";
+		const wantArg =
+			actionIndex === undefined
+				? "nil"
+				: typeof actionIndex === "number"
+					? String(actionIndex)
+					: `"${q(actionIndex)}"`;
+		try {
+			return await this.evalLuaJson(`
+${resolveBufnrLua(nameArg)}
+${positionParamsLua()}
+local params = make_range_params(bufnr, ${line ?? "nil"}, ${col ?? "nil"})
+-- Diagnostic quickfixes (remove unused, fix all, …) only appear when the
+-- request carries the diagnostics overlapping the position in context. The
+-- diagnostics must be in LSP shape: vim.diagnostic.get returns byte lnum/col,
+-- servers expect range in their offset encoding — ts_ls errors with "Cannot
+-- destructure property 'start' of 'diagnostic.range'" otherwise.
+local function to_lsp_diag(d)
+  return {
+    range = {
+      start = { line = d.lnum, character = to_lsp_col(bufnr, d.lnum, d.col) },
+      ["end"] = { line = d.end_lnum or d.lnum, character = to_lsp_col(bufnr, d.end_lnum or d.lnum, d.end_col or d.col) },
+    },
+    severity = d.severity,
+    code = d.code,
+    source = d.source,
+    message = d.message,
+    tags = d.tags,
+  }
+end
+params.context = {
+  diagnostics = vim.tbl_map(to_lsp_diag, vim.diagnostic.get(bufnr, { lnum = params.range.start.line, end_lnum = params.range.start.line })),
+}
+local want = ${wantArg}
+local results = vim.lsp.buf_request_sync(bufnr, 'textDocument/codeAction', params, 3000)
+-- buf_request_sync returns a MAP keyed by client id, not a list; sort ids so
+-- the 1-based action index is deterministic across clients.
+local ids = vim.tbl_keys(results or {})
+table.sort(ids)
+local raw = {}
+local actions = {}
+for _, id in ipairs(ids) do
+  local resp = results[id]
+  if resp.result and vim.tbl_islist(resp.result) then
+    for _, a in ipairs(resp.result) do
+      if a and a.title then
+        raw[#raw + 1] = a
+        table.insert(actions, { title = a.title, kind = a.kind or "", is_preferred = a.isPreferred or false })
+      end
+    end
+  end
+end
+if #actions == 0 then return vim.json.encode({ error = "No code actions at the cursor" }) end
+if want == nil then
+  return vim.json.encode({ actions = actions, count = #actions })
+end
+-- Apply: match by 1-based index across all clients, or by exact title.
+local picked
+if type(want) == "number" then
+  picked = raw[want]
+else
+  for _, a in ipairs(raw) do
+    if a.title == want then picked = a end
+  end
+end
+if not picked then return vim.json.encode({ error = "Action not found: " .. tostring(want) }) end
+if picked.edit then
+  vim.lsp.util.apply_workspace_edit(picked.edit, lsp_offset_encoding(bufnr))
+end
+if picked.command then
+  vim.lsp.buf.execute_command({ command = picked.command.command, arguments = picked.command.arguments or {} })
+end
+-- Write buffers the workspace edit touched so disk matches the editor.
+local touched = {}
+if picked.edit then
+  if picked.edit.changes then
+    for uri in pairs(picked.edit.changes) do touched[#touched + 1] = vim.uri_to_bufnr(uri) end
+  end
+  if picked.edit.documentChanges then
+    for _, dc in ipairs(picked.edit.documentChanges) do
+      if dc.textDocument and dc.textDocument.uri then touched[#touched + 1] = vim.uri_to_bufnr(dc.textDocument.uri) end
+    end
+  end
+end
+for _, b in ipairs(touched) do
+  if b > 0 and vim.api.nvim_buf_is_loaded(b) then
+    pcall(vim.api.nvim_buf_call, b, function() vim.cmd("silent! update") end)
+  end
+end
+return vim.json.encode({ applied = picked.title, kind = picked.kind or "", edit = picked.edit ~= nil, command = picked.command ~= nil, wrote = #touched })
+`);
+		} catch {
+			return { error: "nvim RPC failed" };
+		}
+	}
+
+	/**
+	 * Format a buffer. Prefers the conform.nvim plugin (it resolves the
+	 * filetype's formatter list and falls back to LSP formatting); without
+	 * conform, falls back to plain vim.lsp.buf.format.
+	 */
+	async formatBuffer(
+		name: string | undefined,
+		formatter: string | undefined,
+	): Promise<{
+		error?: string;
+		backend?: "conform" | "lsp" | "none";
+		formatters?: string[];
+		changed?: boolean;
+	}> {
+		const q = NvimSocketClient.#luaQuote;
+		const nameArg = name ? `"${q(name)}"` : "nil";
+		const formatterArg = formatter ? `"${q(formatter)}"` : "nil";
+		try {
+			return await this.evalLuaJson(`
+${resolveBufnrLua(nameArg)}
+local formatter = ${formatterArg}
+local ok, conform = pcall(require, "conform")
+if ok and conform.format then
+  local opts = { bufnr = bufnr, lsp_format = "fallback", async = false, timeout_ms = 5000, quiet = true }
+  if formatter then opts.formatters = { formatter } end
+  local done, err, did_edit = false, nil, false
+  conform.format(opts, function(e, d)
+    err, did_edit, done = e, d or false, true
+  end)
+  -- async=false fires the callback synchronously; wait defensively anyway.
+  if not done then vim.wait(6000, function() return done end) end
+  local used = {}
+  local ok2, fts = pcall(conform.list_formatters_to_run, bufnr)
+  if ok2 and fts then
+    for _, f in ipairs(fts) do used[#used + 1] = f.name end
+  end
+  return vim.json.encode({ backend = "conform", formatters = used, changed = did_edit, error = err or nil })
+end
+local requested = vim.lsp.buf.format({ bufnr = bufnr, async = false })
+return vim.json.encode({ backend = "lsp", changed = requested, error = nil })
+`);
+		} catch {
+			return { error: "nvim RPC failed" };
+		}
+	}
+
+	/**
+	 * Realign the markdown table at a 1-based line via vim-table-mode's
+	 * autoload function (works without the plugin being explicitly loaded:
+	 * autoload pulls it in on first call). No-op when the line is not inside
+	 * a table.
+	 */
+	async realignTable(
+		name: string | undefined,
+		line: number | undefined,
+	): Promise<{
+		error?: string;
+		realigned?: boolean;
+		line?: number;
+		filetype?: string;
+	}> {
+		const q = NvimSocketClient.#luaQuote;
+		const nameArg = name ? `"${q(name)}"` : "nil";
+		try {
+			return await this.evalLuaJson(`
+${resolveBufnrLua(nameArg)}
+local line = ${line ?? "nil"}
+local ft = vim.bo[bufnr].filetype or ""
+if ft ~= "markdown" and ft ~= "markdown.mdx" then
+  return vim.json.encode({ error = "vim-table-mode only aligns markdown tables (filetype: " .. ft .. ")" })
+end
+if line == nil then
+  line = bufnr == vim.api.nvim_get_current_buf() and vim.api.nvim_win_get_cursor(0)[1] or 1
+end
+local before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+local ok, err = pcall(function()
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.fn["tablemode#table#Realign"](line)
+  end)
+end)
+if not ok then
+  return vim.json.encode({ error = "vim-table-mode not available: " .. tostring(err) })
+end
+local after = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+local changed = #before ~= #after
+if not changed then
+  for i = 1, #before do
+    if before[i] ~= after[i] then changed = true break end
+  end
+end
+return vim.json.encode({ realigned = changed, line = line, filetype = ft })
+`);
+		} catch {
+			return { error: "nvim RPC failed" };
+		}
+	}
+
+	/**
+	 * Make a file visible in nvim: activate its window (opening a split or
+	 * replacing the current view when not visible), jump the cursor to a
+	 * 1-based line/col, and center the view. The user watches the editor —
+	 * this is the "show the user what the agent is doing" primitive.
+	 */
+	async revealFile(
+		name: string,
+		line?: number,
+		col?: number,
+		split?: "vsplit" | "split",
+	): Promise<{ error?: string; path?: string; bufnr?: number; window?: number; line?: number }> {
+		const q = NvimSocketClient.#luaQuote;
+		try {
+			return await this.evalLuaJson(`
+local path, line, col, split = "${q(name)}", ${line ?? "nil"}, ${col ?? "nil"}, ${split ? `"${split}"` : "nil"}
+local b = vim.fn.bufnr(path)
+if b == -1 then b = vim.fn.bufadd(path) end
+if b > 0 and not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
+if b == -1 or not vim.api.nvim_buf_is_loaded(b) then
+  return vim.json.encode({ error = "Cannot load buffer: " .. path })
+end
+-- Activate the buffer in a visible window (or open one, optionally split).
+local winid = vim.fn.bufwinid(b)
+if winid == -1 then
+  if split == "vsplit" then vim.cmd("vsplit") elseif split == "split" then vim.cmd("split") end
+  vim.api.nvim_set_current_buf(b)
+else
+  vim.api.nvim_set_current_win(winid)
+end
+-- Jump to the requested position and center the view (scroll follows).
+if line then
+  local maxline = vim.api.nvim_buf_line_count(b)
+  local l = math.min(math.max(1, line), maxline)
+  local text = vim.api.nvim_buf_get_lines(b, l - 1, l, false)[1] or ""
+  local c = math.min(math.max(0, (col or 1) - 1), #text)
+  pcall(vim.api.nvim_win_set_cursor, 0, { l, c })
+  vim.cmd("normal! zz")
+end
+vim.cmd("redraw")
+return vim.json.encode({ path = path, bufnr = b, window = vim.api.nvim_get_current_win(), line = line and vim.api.nvim_win_get_cursor(0)[1] or nil })
+`);
+		} catch {
+			return { error: "nvim RPC failed" };
 		}
 	}
 
@@ -647,14 +1083,8 @@ return vim.json.encode({
 		const q = NvimSocketClient.#luaQuote;
 		return this.evalLuaJson<NvimBufferRead>(`
 local file, s, e = "${q(name)}", ${startLine ?? "nil"}, ${endLine ?? "nil"}
--- bufadd/bufload first so any path on disk can be read, not just open buffers
--- (vimgrep leaves listed-but-unloaded buffers behind; bufload handles those too).
 local b = vim.fn.bufnr(file)
-if b == -1 then b = vim.fn.bufadd(file) end
-if b > 0 and not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
-if b == -1 or not vim.api.nvim_buf_is_loaded(b) then
-  return vim.json.encode({ error = "Buffer not found: " .. file })
-end
+if b == -1 then return vim.json.encode({ error = "Buffer not found: " .. file }) end
 local total = vim.api.nvim_buf_line_count(b)
 local ls = (type(s) == "number") and s or 1
 local le = (type(e) == "number") and e or total
@@ -672,14 +1102,8 @@ return vim.json.encode({ lines = lines, total_lines = total })
 		const q = NvimSocketClient.#luaQuote;
 		return this.evalLuaJson<NvimFindReplaceResult>(`
 local file, old_str, new_str = "${q(name)}", "${q(oldStr)}", "${q(newStr)}"
--- bufadd/bufload first: nvim_find_replace must work on any file on disk,
--- not only buffers already open (vimgrep leaves unloaded listed buffers).
 local b = vim.fn.bufnr(file)
-if b == -1 then b = vim.fn.bufadd(file) end
-if b > 0 and not vim.api.nvim_buf_is_loaded(b) then vim.fn.bufload(b) end
-if b == -1 or not vim.api.nvim_buf_is_loaded(b) then
-  return vim.json.encode({ error = "Buffer not found: " .. file })
-end
+if b == -1 then return vim.json.encode({ error = "Buffer not found: " .. file }) end
 local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
 local text = table.concat(lines, "\\n")
 local s, e = string.find(text, old_str, 1, true)

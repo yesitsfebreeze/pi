@@ -5,6 +5,7 @@
  * available fuzzy-finder plugins (telescope, fzf-lua).
  */
 
+import { statSync } from "node:fs";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.ts";
@@ -268,6 +269,7 @@ export function createBuffersTool(client: NvimSocketClient): ToolDefinition<type
 		promptSnippet: "List open nvim buffers with filetype and modified status",
 		description: "List all open nvim buffers with their filetype and modified status.",
 		parameters: buffersSchema,
+		rare: false,
 		async execute() {
 			const buffers = await client.getBuffers();
 			const lines = buffers.map(
@@ -307,6 +309,15 @@ const nvimSearchSchema = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "Maximum matches (default: 100)" })),
 });
 
+/** True when the path names an existing file (vimgrep target differs for files). */
+function isFile(p: string): boolean {
+	try {
+		return statSync(p).isFile();
+	} catch {
+		return false;
+	}
+}
+
 export function createNvimSearchTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof nvimSearchSchema> {
 	return {
 		name: "nvim_search",
@@ -316,31 +327,34 @@ export function createNvimSearchTool(cwd: string, client: NvimSocketClient): Too
 			"Search project files using nvim's vimgrep. Optionally filter matches by glob. " +
 			"Results are placed in the quickfix list and returned here.",
 		parameters: nvimSearchSchema,
+		rare: false,
 		async execute(_id, { pattern, path, glob, literal, limit }, _signal) {
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 100;
 
+			// vimgrep's file args are globs natively, so the glob filter and the
+			// single-file case are resolved here instead of grepping everything
+			// and filtering in Lua: a *file* path must not get "/**" appended
+			// (that matches nothing), and a glob folds into the target so
+			// vimgrep skips non-matching files (and binaries) itself.
+			let target: string;
+			if (glob) {
+				target = glob.includes("/") ? `${searchPath}/${glob}` : `${searchPath}/**/${glob}`;
+			} else if (isFile(searchPath)) {
+				target = searchPath;
+			} else {
+				target = `${searchPath}/**`;
+			}
+
 			const escaped = luaQuote(pattern);
-			const escapedPath = luaQuote(searchPath);
-			const escapedGlob = glob ? luaQuote(glob) : "";
+			const escapedTarget = luaQuote(target);
 
 			const lua = `
 local results = {}
 local pattern = "${escaped}"
-local searchPath = "${escapedPath}"
+local target = "${escapedTarget}"
 local limit = ${searchLimit}
 local literal = ${literal ? "true" : "false"}
-local glob = ${glob ? `"${escapedGlob}"` : "nil"}
-
--- Honour the advertised glob filter: match it against the basename, and
--- against the path too when the glob spans directories (e.g. 'src/**/*.ts').
-local glob_re = glob and vim.fn.glob2regpat(glob) or nil
-local glob_spans_dirs = glob and glob:find("/") ~= nil
-local function keep(file)
-  if not glob_re then return true end
-  local subject = glob_spans_dirs and file or vim.fn.fnamemodify(file, ":t")
-  return vim.fn.match(subject, glob_re) >= 0
-end
 
 -- vimgrep is the only programmatic backend here: telescope and fzf-lua are
 -- interactive pickers with no headless grep API, so every "backend" branch
@@ -358,20 +372,17 @@ if pattern:find("/", 1, true) then
     if not pattern:find(c, 1, true) then d = c break end
   end
 end
-vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. searchPath .. "/**")
+vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. target)
 local qf = vim.fn.getqflist()
 for i = 1, #qf do
   if #results >= limit then break end
   local item = qf[i]
-  local file = vim.fn.bufname(item.bufnr)
-  if keep(file) then
-    table.insert(results, {
-      file = file,
-      lnum = item.lnum,
-      col = item.col,
-      text = (item.text or ""):sub(1, 200),
-    })
-  end
+  table.insert(results, {
+    file = vim.fn.bufname(item.bufnr),
+    lnum = item.lnum,
+    col = item.col,
+    text = (item.text or ""):sub(1, 200),
+  })
 end
 
 return vim.fn.json_encode(results)
@@ -437,6 +448,7 @@ export function createNvimFindFilesTool(
 			"Find files by glob pattern using nvim's globpath, which respects the user's 'wildignore'. " +
 			"Always available — needs no fuzzy-finder plugin.",
 		parameters: nvimFindFilesSchema,
+		rare: false,
 		async execute(_id, { pattern, path, limit }, _signal) {
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 200;
@@ -535,25 +547,37 @@ export function createNvimFindReplaceAllTool(
 			"apply=false (default) is a dry run that reports matches without touching anything; apply=true performs the replacement and saves. " +
 			"For a single unique string in one buffer, prefer nvim_find_replace.",
 		parameters: nvimFindReplaceAllSchema,
+		rare: false,
 		async execute(_id, { pattern, replacement, path, glob, literal, apply, limit }, _signal) {
 			const searchPath = path || cwd;
 			const searchLimit = limit ?? 100;
 
+			// Same target resolution as nvim_search: a *file* path must not get
+			// "/**" appended (matches nothing), and a glob folds into the target
+			// so vimgrep (and therefore the quickfix list) only ever contains the
+			// files the caller asked for — no in-Lua post-filter needed.
+			let target: string;
+			if (glob) {
+				target = glob.includes("/") ? `${searchPath}/${glob}` : `${searchPath}/**/${glob}`;
+			} else if (isFile(searchPath)) {
+				target = searchPath;
+			} else {
+				target = `${searchPath}/**`;
+			}
+
 			const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 			const escaped = esc(pattern);
 			const escapedRepl = esc(replacement);
-			const escapedPath = esc(searchPath);
-			const escapedGlob = glob ? esc(glob) : "";
+			const escapedTarget = esc(target);
 
 			const lua = `
 local results = {}
 local pattern = "${escaped}"
 local replacement = "${escapedRepl}"
-local searchPath = "${escapedPath}"
+local target = "${escapedTarget}"
 local limit = ${searchLimit}
 local literal = ${literal ? "true" : "false"}
 local apply = ${apply ? "true" : "false"}
-local glob = ${glob ? `"${escapedGlob}"` : "nil"}
 
 -- Very-nomagic for literal searches so regex metachars are inert.
 local magic = literal and "\\\\V" or ""
@@ -567,29 +591,11 @@ local function pick_delim(s1, s2)
 end
 local d = pick_delim(pattern, replacement)
 
--- Glob filter, applied to the quickfix list itself so :cdo touches only the
--- files the caller asked for (the list the user sees == the list we edit).
-local glob_re = glob and vim.fn.glob2regpat(glob) or nil
-local glob_spans_dirs = glob and glob:find("/") ~= nil
-local function keep(file)
-  if not glob_re then return true end
-  local subject = glob_spans_dirs and file or vim.fn.fnamemodify(file, ":t")
-  return vim.fn.match(subject, glob_re) >= 0
-end
-
--- Populate the quickfix list: every match is visible in nvim (:copen).
-vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. searchPath .. "/**")
+-- Populate the quickfix list: every match is visible in nvim (:copen) and,
+-- because the glob was folded into the vimgrep target, the list already
+-- contains exactly the files the caller asked for.
+vim.cmd("silent! vimgrep " .. d .. magic .. pattern .. d .. "j " .. target)
 local qf = vim.fn.getqflist()
-
--- Filter the quickfix list by glob (replace-in-place) so cdo edits only the
--- kept entries and the visible list matches what we report.
-if glob then
-  local kept = {}
-  for _, item in ipairs(qf) do
-    if keep(vim.fn.bufname(item.bufnr)) then table.insert(kept, item) end
-  end
-  vim.fn.setqflist(kept, "r")
-end
 
 local function count_by_file(items)
   local counts = {}
@@ -707,6 +713,217 @@ return vim.fn.json_encode({
 	};
 }
 
+// ── lsp_rename ──────────────────────────────────────────────────────────────
+
+const lspRenameSchema = Type.Object({
+	newName: Type.String({ description: "The new name for the symbol." }),
+	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
+	line: Type.Optional(Type.Number({ description: "0-indexed line number. Defaults to cursor position." })),
+	col: Type.Optional(Type.Number({ description: "0-indexed column. Defaults to cursor position." })),
+	write: Type.Optional(Type.Boolean({ description: "Write affected buffers after renaming (default: true)." })),
+});
+
+export function createLspRenameTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof lspRenameSchema> {
+	return {
+		name: "lsp_rename",
+		label: "lsp_rename",
+		promptSnippet: "Rename a symbol across the project via LSP",
+		description:
+			"Rename the symbol at the cursor (or given position) across every file via the LSP textDocument/rename handler. " +
+			"Applies edits to the live buffers and writes them (unless write=false), so the rename lands on disk like an edit-tool change.",
+		parameters: lspRenameSchema,
+		async execute(_id, { newName, path, line, col, write }, _signal) {
+			const name = await resolvePath(path, cwd, client);
+			const result = await client.renameSymbol(name || undefined, line, col, newName, write ?? true);
+			if (result.error) {
+				return { content: [{ type: "text" as const, text: result.error }], details: undefined };
+			}
+			const lines = result.files?.length
+				? [
+						`Renamed to "${newName}" (${result.edits} edit(s) across ${result.files.length} file(s)):`,
+						...result.files.map((f) => `  ${f}`),
+					]
+				: [`Renamed to "${newName}" — no edits applied.`];
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
+		},
+		renderCall(args, theme, _context) {
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("lsp_rename"))} ${args.newName ?? ""} @ ${args.path ?? "current"}${pos(args)}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
+}
+
+// ── lsp_code_action ─────────────────────────────────────────────────────────
+
+const lspCodeActionSchema = Type.Object({
+	action: Type.Optional(
+		Type.Union([
+			Type.Number({ description: "1-based index of the action to apply (from the listing)." }),
+			Type.String({ description: "Exact title of the action to apply." }),
+		]),
+	),
+	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
+	line: Type.Optional(Type.Number({ description: "0-indexed line number. Defaults to cursor position." })),
+	col: Type.Optional(Type.Number({ description: "0-indexed column. Defaults to cursor position." })),
+});
+
+export function createLspCodeActionTool(
+	cwd: string,
+	client: NvimSocketClient,
+): ToolDefinition<typeof lspCodeActionSchema> {
+	return {
+		name: "lsp_code_action",
+		label: "lsp_code_action",
+		promptSnippet: "List or apply LSP code actions (quickfixes, refactors) at the cursor",
+		description:
+			"List LSP code actions available at the cursor (or given position): quickfixes for diagnostics, refactors, organize-imports, etc. " +
+			"Omit `action` to get the numbered list; pass an index or an exact title to apply it (workspace edit + command, touched buffers written).",
+		parameters: lspCodeActionSchema,
+		async execute(_id, { action, path, line, col }, _signal) {
+			const name = await resolvePath(path, cwd, client);
+			const result = await client.codeActions(name || undefined, line, col, action);
+			if (result.error) {
+				return { content: [{ type: "text" as const, text: result.error }], details: undefined };
+			}
+			if (result.applied) {
+				const parts = [`Applied code action: ${result.applied}`];
+				if (result.edit) parts.push("(edit)");
+				if (result.command) parts.push("(command)");
+				if (result.wrote) parts.push(`(${result.wrote} buffer(s) written)`);
+				return { content: [{ type: "text" as const, text: parts.join(" ") }], details: undefined };
+			}
+			const lines = [`Code actions (${result.count}):`];
+			for (const [i, a] of (result.actions ?? []).entries()) {
+				lines.push(`  ${i + 1}. ${a.title}${a.is_preferred ? " (preferred)" : ""}${a.kind ? ` [${a.kind}]` : ""}`);
+			}
+			lines.push("", "Pass action=<index or title> to apply one.");
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: undefined };
+		},
+		renderCall(args, theme, _context) {
+			const act = args.action !== undefined ? ` → ${String(args.action)}` : " (list)";
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("lsp_code_action"))} ${args.path ?? "current"}${pos(args)}${act}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
+}
+
+// ── nvim_format (conform.nvim) ──────────────────────────────────────────────
+
+const nvimFormatSchema = Type.Object({
+	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
+	formatter: Type.Optional(
+		Type.String({
+			description:
+				"Force a specific conform formatter name (e.g. 'prettier', 'black'). Default: conform's formatters_by_ft resolution, falling back to LSP formatting.",
+		}),
+	),
+});
+
+export function createNvimFormatTool(cwd: string, client: NvimSocketClient): ToolDefinition<typeof nvimFormatSchema> {
+	return {
+		name: "nvim_format",
+		label: "nvim_format",
+		promptSnippet: "Format a buffer via conform.nvim (or LSP fallback)",
+		description:
+			"Format a buffer using the user's installed formatter runner (conform.nvim: resolves formatters_by_ft, e.g. black for python, prettier for markdown, and falls back to LSP formatting). " +
+			"Without conform, falls back to plain vim.lsp.buf.format. The live buffer is formatted in place; the change is visible in nvim immediately.",
+		parameters: nvimFormatSchema,
+		async execute(_id, { path, formatter }, _signal) {
+			const name = await resolvePath(path, cwd, client);
+			const result = await client.formatBuffer(name || undefined, formatter);
+			if (result.error) {
+				return { content: [{ type: "text" as const, text: result.error }], details: undefined };
+			}
+			const used = result.formatters?.length ? result.formatters.join(", ") : "lsp fallback";
+			const text = `Formatted via ${result.backend === "lsp" ? "LSP" : `conform [${used}]`}${result.changed ? "" : " — no changes needed"}`;
+			return { content: [{ type: "text" as const, text }], details: undefined };
+		},
+		renderCall(args, theme, _context) {
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("nvim_format"))} ${args.path ?? "current"}${args.formatter ? ` (${args.formatter})` : ""}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
+}
+
+// ── nvim_table_realign (vim-table-mode) ─────────────────────────────────────
+
+const nvimTableRealignSchema = Type.Object({
+	path: Type.Optional(Type.String({ description: "Buffer name. Defaults to current buffer." })),
+	line: Type.Optional(
+		Type.Number({
+			description: "1-based line inside the table to realign at. Defaults to the cursor line (or line 1).",
+		}),
+	),
+});
+
+export function createNvimTableRealignTool(
+	cwd: string,
+	client: NvimSocketClient,
+): ToolDefinition<typeof nvimTableRealignSchema> {
+	return {
+		name: "nvim_table_realign",
+		label: "nvim_table_realign",
+		promptSnippet: "Realign a markdown table via vim-table-mode",
+		description:
+			"Realign the markdown table under the given line using vim-table-mode's TableModeRealign. " +
+			"Fixes pipe alignment that drifts when rows are added or edited. No-op when the line is not inside a table.",
+		parameters: nvimTableRealignSchema,
+		async execute(_id, { path, line }, _signal) {
+			const name = await resolvePath(path, cwd, client);
+			const result = await client.realignTable(name || undefined, line);
+			if (result.error) {
+				return { content: [{ type: "text" as const, text: result.error }], details: undefined };
+			}
+			const text = `Table realigned at line ${result.line}${result.realigned ? "" : " (already aligned, or no table there)"}`;
+			return { content: [{ type: "text" as const, text }], details: undefined };
+		},
+		renderCall(args, theme, _context) {
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("nvim_table_realign"))} ${args.path ?? "current"}${args.line ? `:${args.line}` : ""}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, _options, theme, _context) {
+			const output = result.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+			return new Text(theme.fg("toolOutput", output), 0, 0);
+		},
+	};
+}
+
 // ── all nvim tools ──────────────────────────────────────────────────────────
 
 export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient): ToolDefinition[] {
@@ -722,5 +939,9 @@ export function createNvimToolDefinitions(cwd: string, client: NvimSocketClient)
 		createNvimSearchTool(cwd, client),
 		createNvimFindFilesTool(cwd, client),
 		createNvimFindReplaceAllTool(cwd, client),
+		createLspRenameTool(cwd, client),
+		createLspCodeActionTool(cwd, client),
+		createNvimFormatTool(cwd, client),
+		createNvimTableRealignTool(cwd, client),
 	];
 }

@@ -36,9 +36,21 @@ import type { GrepOperations } from "../tools/grep.ts";
 import type { LsOperations } from "../tools/ls.ts";
 import type { ReadOperations } from "../tools/read.ts";
 import type { WriteOperations } from "../tools/write.ts";
-import type { NvimSocketClient } from "./nvim-socket-client.ts";
+import { luaQuote, type NvimSocketClient } from "./nvim-socket-client.ts";
 
 type ClientGetter = () => NvimSocketClient | undefined;
+
+/**
+ * 1-based index of the first differing line between two texts (for revealing
+ * the edit site in the editor). undefined when the texts are identical.
+ */
+function firstDiffLine(before: string[], after: string[]): number | undefined {
+	const n = Math.max(before.length, after.length);
+	for (let i = 0; i < n; i++) {
+		if (before[i] !== after[i]) return i + 1;
+	}
+	return undefined;
+}
 
 // ── Read ────────────────────────────────────────────────────────────────────
 
@@ -104,13 +116,25 @@ if bufnr > 0 then vim.fn.bufload(bufnr) end
 			// Buffer lookup by path (bufnr-resolved); updates the live buffer when
 			// it is open in nvim, and always writes to disk afterwards.
 			const state = await client.getBufferState(absolutePath);
+			let changedLine: number | undefined;
 			if (state) {
 				const currentLines = state.content.split("\n");
+				changedLine = firstDiffLine(currentLines, lines);
 				// Replace entire buffer
 				await client.applyEdits(absolutePath, [{ startLine: 0, endLine: currentLines.length, newLines: lines }]);
 			}
 			// Always also write to disk so the edit tool's contract is fulfilled
 			await writeFile(absolutePath, content, "utf-8");
+			// Show the user what changed: switch the view to the file and land the
+			// cursor on the first edited line (the user watches the editor — edits
+			// must be visible, not background-buffer whispers).
+			if (changedLine !== undefined) {
+				try {
+					await client.revealFile(absolutePath, changedLine);
+				} catch {
+					// best-effort: a stuck reveal must never fail an edit
+				}
+			}
 		},
 		access: async (absolutePath: string): Promise<void> => {
 			const client = getClient();
@@ -134,13 +158,23 @@ export function createNvimWriteOps(getClient: ClientGetter): WriteOperations {
 				if (content.endsWith("\n")) lines.pop();
 
 				const state = await client.getBufferState(absolutePath);
+				let changedLine: number | undefined;
 				if (state) {
+					changedLine = firstDiffLine(state.content.split("\n"), lines);
 					await client.applyEdits(absolutePath, [
 						{ startLine: 0, endLine: state.content.split("\n").length, newLines: lines },
 					]);
 				}
 				// Also write to disk
 				await writeFile(absolutePath, content, "utf-8");
+				// Reveal the edited site so the user sees the write happen.
+				if (changedLine !== undefined) {
+					try {
+						await client.revealFile(absolutePath, changedLine);
+					} catch {
+						// best-effort
+					}
+				}
 				return;
 			}
 			// Fallback: write directly to filesystem
@@ -183,7 +217,7 @@ export function createNvimFindOps(getClient: ClientGetter): FindOperations {
 				// Use nvim's built-in glob
 				const luaPattern = pattern.replace(/\\/g, "/");
 				const result = await client.evalLua(`
-local results = vim.fn.globpath("${searchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}", "${luaPattern}", false, true)
+local results = vim.fn.globpath("${luaQuote(searchPath)}", "${luaPattern}", false, true)
 if #results > ${limit} then
   results = vim.list_slice(results, 1, ${limit})
 end

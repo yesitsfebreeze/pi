@@ -140,6 +140,12 @@ export function createNvimStateTool(client: NvimSocketClient): ToolDefinition<ty
 		label: "nvim state",
 		promptSnippet: "Snapshot the whole nvim session: mode, cwd, buffers, LSP clients, diagnostics, windows, cursor",
 		promptGuidelines: nvimPromptGuidelines,
+		// Hot on the surface when nvim is connected: this is the "work itself"
+		// set — the same argument that keeps bash/read/edit hot. Deferred
+		// schemas cost a tools action=on round-trip exactly when the agent is
+		// deciding between nvim tools and bash; nvim tools are only registered
+		// while connected, so this costs nothing outside nvim sessions.
+		rare: false,
 		description:
 			"Snapshot the whole nvim session: mode, cwd, every open buffer, LSP clients, diagnostics, every window, cursor, folds, visual selection, marks. Use 'brief' (default) for a cheap every-turn view with LSP clients + active-buffer diagnostics; 'full' for every window with folds/marks/diagnostics summary.",
 		parameters: nvimStateSchema,
@@ -181,6 +187,7 @@ export function createNvimReadBufTool(client: NvimSocketClient): ToolDefinition<
 		promptSnippet: "Read any nvim buffer (whole or line range) with line numbers",
 		description: "Read any nvim buffer (not just the current one), whole or by line range, with line numbers.",
 		parameters: nvimReadBufSchema,
+		rare: false,
 		async execute(_id, { path, start_line, end_line }, _signal) {
 			const r = await client.readBuffer(path, start_line, end_line);
 			if (!r) return { content: [{ type: "text" as const, text: "Buffer read failed." }], details: undefined };
@@ -214,10 +221,18 @@ export function createNvimFindReplaceTool(client: NvimSocketClient): ToolDefinit
 		description:
 			"Find-and-replace an exact, unique string in any nvim buffer (edits the live buffer, not disk). Rejects multi-match — add surrounding context to make old_string unique. Full undo support.",
 		parameters: nvimFindReplaceSchema,
+		rare: false,
 		async execute(_id, { path, old_string, new_string }, _signal) {
 			const r = await client.findReplaceInBuffer(path, old_string, new_string);
 			if (!r) return { content: [{ type: "text" as const, text: "Replace failed." }], details: undefined };
 			if (r.error) return { content: [{ type: "text" as const, text: r.error }], details: undefined };
+			// Show the edit: jump the view to the replaced line (the user watches
+			// the editor — a replace must be visible, not a background whisper).
+			try {
+				await client.revealFile(path, r.start_line);
+			} catch {
+				// best-effort
+			}
 			return {
 				content: [
 					{
@@ -252,6 +267,7 @@ export function createNvimKeysTool(client: NvimSocketClient): ToolDefinition<typ
 		description:
 			"Send raw keystrokes to nvim to drive the cursor, enter insert mode, trigger mappings, etc. Escape is auto-prepended. Use for interactive editing; use nvim_find_replace/nvim_exec for precise edits.",
 		parameters: nvimKeysSchema,
+		rare: false,
 		async execute(_id, { keys }, _signal) {
 			const r = await client.sendKeys(keys);
 			return { content: [{ type: "text" as const, text: `sent: ${r.sent}` }], details: undefined };
@@ -429,6 +445,59 @@ export function createNvimVirtualTextClearTool(
 
 // ── aggregate ──────────────────────────────────────────────────────────────
 
+// ── nvim_reveal ──────────────────────────────────────────────────────────────
+
+const nvimRevealSchema = Type.Object({
+	path: Type.String({ description: "File path or buffer name to reveal." }),
+	line: Type.Optional(Type.Number({ description: "1-based line to jump to. Default: keep the current position." })),
+	col: Type.Optional(Type.Number({ description: "1-based column to jump to. Default: column 1 of that line." })),
+	split: Type.Optional(
+		Type.String({
+			description: "Open in a split: 'vsplit' (vertical) or 'split' (horizontal). Default: use the current window.",
+		}),
+	),
+});
+
+export function createNvimRevealTool(client: NvimSocketClient): ToolDefinition<typeof nvimRevealSchema> {
+	return {
+		name: "nvim_reveal",
+		label: "nvim reveal",
+		promptSnippet: "Show a file in nvim: switch to it, jump the cursor, center the view",
+		description:
+			"Make a file visible in nvim: activate its window (or open it in the current window, optionally in a split), " +
+			"move the cursor to line/col, and center the view. The user watches the editor — use this whenever you read or " +
+			"edit a file so they see exactly what you're working on. Edits auto-reveal the changed line already; use this to " +
+			"point at search hits, definitions, or the file you're about to work on.",
+		parameters: nvimRevealSchema,
+		async execute(_id, { path, line, col, split }, _signal) {
+			const result = await client.revealFile(
+				path,
+				line,
+				col,
+				(split as "vsplit" | "split" | undefined) ?? undefined,
+			);
+			if (result.error) {
+				return { content: [{ type: "text" as const, text: result.error }], details: undefined };
+			}
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `revealed ${result.path}${result.line ? `:${result.line}` : ""} (window ${result.window})`,
+					},
+				],
+				details: undefined,
+			};
+		},
+		renderCall(args, theme) {
+			return title(theme, "nvim_reveal", `${args.path}${args.line ? `:${args.line}` : ""}`);
+		},
+		renderResult: renderText,
+	};
+}
+
+// ── all nvim surface tools ──────────────────────────────────────────────────
+
 export function createNvimSurfaceToolDefinitions(client: NvimSocketClient): ToolDefinition[] {
 	return [
 		createNvimStateTool(client),
@@ -440,5 +509,6 @@ export function createNvimSurfaceToolDefinitions(client: NvimSocketClient): Tool
 		createNvimHighlightClearTool(client),
 		createNvimVirtualTextTool(client),
 		createNvimVirtualTextClearTool(client),
+		createNvimRevealTool(client),
 	];
 }

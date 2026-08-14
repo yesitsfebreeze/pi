@@ -29,6 +29,7 @@ export function createNvimConfigTool(client: NvimSocketClient): ToolDefinition<t
 			"LSP servers, loaded plugins, and available search tools (telescope, fzf-lua). " +
 			"Use this to understand the user's nvim setup before offering nvim-specific guidance.",
 		parameters: nvimConfigSchema,
+		rare: false,
 		async execute(_id, { section }, _signal) {
 			const sections = section ? [section] : ["keymaps", "options", "lsp", "plugins", "search_tools"];
 			const parts: string[] = [];

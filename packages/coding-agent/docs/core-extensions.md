@@ -91,6 +91,15 @@ themselves — `nvim_state`, `nvim_read_buf`, `buffers`, `nvim_search`,
 and `interactive-mode.ts`, and only when an nvim socket client actually
 connects. No connection, no tools.
 
+The workhorse set ships **hot** (opts out of the tool band via `rare: false`)
+so the agent reaches it without a restore: `nvim_state`, `nvim_read_buf`,
+`nvim_find_replace`, `nvim_find_replace_all`, `nvim_search`,
+`nvim_find_files`, `buffers`, `nvim_keys`, `nvim_exec`, `nvim_lua`,
+`nvim_config`, `nvim_learn`. They are only registered while connected, so
+their schemas cost nothing outside nvim sessions. The situational tools (LSP,
+`ts_query`, `nvim_terminal_send`, highlight/virtual-text) stay deferred as
+one-liners until restored.
+
 ## Features wired outside the inline list
 
 Three core features predate or sidestep the inline-extension list.

@@ -167,8 +167,11 @@ export function createNvimSurfaceExtension(timeoutMs = 2500): InlineExtension {
 								[
 									"# nvim surface (live snapshot at turn start)",
 									"LSP clients and diagnostics for active/alternate buffers are injected above.",
-									"Use lsp_definition/lsp_references/lsp_hover for on-demand symbol queries,",
-									"or nvim_state for a deeper view / nvim_read_buf to read any open buffer.",
+									"Use the lsp_* tools (definition/references/hover/rename/code_action) for symbols,",
+									"nvim_format to format, nvim_table_realign for markdown tables, or nvim_state for a deeper view.",
+									"WORK VISIBLY — the editor is your stage: edits auto-reveal the changed line, and",
+									"nvim_reveal switches the window/cursor/scroll to whatever you're working on.",
+									"Prefer nvim-native search (nvim_search → quickfix) and nvim_read_buf over bash for file work.",
 									"",
 									formatSurfaceBlock(s),
 								].join("\n"),

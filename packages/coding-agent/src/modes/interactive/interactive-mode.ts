@@ -97,9 +97,11 @@ import {
 	diffConfigFiles,
 	discoverNvim,
 	getNvimConfigFiles,
+	learnedNotesBlock,
 	learnNvimConfigChanges,
 	type NvimConnection,
 	nvimBasicToolDefinitions,
+	nvimMemoryBankStatus,
 	nvimToolOps,
 	recordSeen,
 	setNvimLearningRoot,
@@ -5300,6 +5302,21 @@ export class InteractiveMode {
 				configChanges = await learnNvimConfigChanges(exec);
 			} catch {}
 
+			// 3c. Memory-bank gate: is everything indexed? On first connection
+			//     (or after config drift) the agent must sift the user's setup
+			//     itself — nvim_learn audit probes every capability for
+			//     runnability and regenerates the keymaps/options/plugins/lsp/
+			//     recipes notes.
+			let bankStatus = "";
+			try {
+				const status = await nvimMemoryBankStatus(exec);
+				if (status.needsAudit) {
+					bankStatus =
+						`Memory bank not indexed (${status.reason}) — run \`nvim_learn audit\` to sift ` +
+						`the user's nvim config and verify every capability before driving the editor.`;
+				}
+			} catch {}
+
 			// 4. Notify the model that nvim is connected with full tool list.
 			const nativeToolNames = [
 				"nvim_state",
@@ -5309,16 +5326,20 @@ export class InteractiveMode {
 				"nvim_terminal_send",
 				"nvim_highlight",
 				"nvim_virtual_text",
+				"nvim_reveal",
 				"lsp_diagnostics",
 				"lsp_references",
 				"lsp_definition",
 				"lsp_hover",
+				"lsp_rename",
+				"lsp_code_action",
+				"nvim_format",
+				"nvim_table_realign",
 				"ts_query",
 				"buffers",
 				"nvim_config",
 				"nvim_search",
 				"nvim_find_files",
-				"nvim_find_replace_all",
 			];
 			const notice =
 				`nvim connected. All file operations (read, write, edit, grep, find, ls) ` +
@@ -5331,8 +5352,10 @@ export class InteractiveMode {
 				`Use nvim_exec/nvim_lua to control nvim directly. ` +
 				`Use nvim_config to inspect the nvim setup. ` +
 				`Use nvim_search/nvim_find_files for fuzzy/project search via telescope/fzf-lua/vimgrep. ` +
-				`Use nvim_learn to diff config changes and persist learned notes about this nvim setup.` +
-				(configChanges ? ` ${configChanges}` : "");
+				`Use nvim_learn to audit this setup, diff config changes, and persist learned notes about this nvim setup.` +
+				(learnedNotesBlock() ? ` ${learnedNotesBlock()}` : "") +
+				(configChanges ? ` ${configChanges}` : "") +
+				(bankStatus ? ` ${bankStatus}` : "");
 			// Inject passively on the next real turn instead of firing a user
 			// prompt. session.prompt() here would start an agent run (a "loop
 			// until continuation") that disrupts the session.
