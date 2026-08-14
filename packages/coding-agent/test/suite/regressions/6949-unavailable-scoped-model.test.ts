@@ -30,10 +30,11 @@ function createInteractiveContext(options: {
 			setEnabledModels: vi.fn(),
 		},
 		showStatus: vi.fn(),
-		showSelector: (factory: (done: () => void) => { component: ScopedModelsSelectorComponent }) => {
+		showSelectorInPane: (factory: (done: () => void) => { component: ScopedModelsSelectorComponent }) => {
 			selector = factory(() => {}).component;
 		},
 		updateAvailableProviderCount: vi.fn(),
+		paneSelectorShortcuts: vi.fn(() => ""),
 		ui: { requestRender: vi.fn() },
 	};
 	return { context, getAvailableSnapshot, getSelector: () => selector, setScopedModels };

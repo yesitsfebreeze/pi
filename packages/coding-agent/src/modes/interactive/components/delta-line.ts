@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai/compat";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getOpenQuestions } from "../../../core/interact/open-questions.ts";
 import { theme } from "../theme/theme.ts";
 import { formatTokens } from "./footer.ts";
 import { renderRoundedBox } from "./rounded-box.ts";
@@ -33,6 +34,8 @@ export class DeltaLineComponent implements Component {
 	private readonly thinkingLevel: string | undefined;
 	private readonly isError: boolean;
 	private readonly errorLabel?: string;
+	private readonly askBoard: boolean;
+	private readonly kernIngested: number;
 
 	constructor(opts: {
 		usage: Usage;
@@ -41,6 +44,8 @@ export class DeltaLineComponent implements Component {
 		thinkingLevel?: string;
 		isError?: boolean;
 		errorLabel?: string;
+		askBoard?: boolean;
+		kernIngested?: number;
 	}) {
 		this.usage = opts.usage;
 		this.durationMs = opts.durationMs;
@@ -48,6 +53,8 @@ export class DeltaLineComponent implements Component {
 		this.thinkingLevel = opts.thinkingLevel;
 		this.isError = opts.isError ?? false;
 		this.errorLabel = opts.errorLabel;
+		this.askBoard = opts.askBoard ?? false;
+		this.kernIngested = opts.kernIngested ?? 0;
 	}
 
 	invalidate(): void {}
@@ -87,6 +94,15 @@ export class DeltaLineComponent implements Component {
 		const fields: string[] = [];
 		const promptTokens = this.usage.input + this.usage.cacheRead + this.usage.cacheWrite;
 
+		// Open-questions board: live segment shown while an ask is pending.
+		// Appears as a bold, high-priority leading field before model name.
+		if (this.askBoard) {
+			const n = getOpenQuestions();
+			if (n > 0) {
+				fields.push(theme.bold(theme.fg("accent", `${n} Open Question${n !== 1 ? "s" : ""}`)));
+			}
+		}
+
 		// Model name first: accent color (highest priority — never dropped, only truncated)
 		if (this.modelName) {
 			const modelStyled = theme.fg("accent", this.modelName);
@@ -102,6 +118,11 @@ export class DeltaLineComponent implements Component {
 		if (promptTokens > 0) tokenParts.push(`↑${formatTokens(promptTokens)}`);
 		if (this.usage.output > 0) tokenParts.push(`↓${formatTokens(this.usage.output)}`);
 		if (tokenParts.length > 0) fields.push(theme.fg("muted", tokenParts.join(" ")));
+
+		// Kern: thoughts ingested by this response's <kern> block
+		if (this.kernIngested > 0) {
+			fields.push(theme.fg("muted", `kern +${this.kernIngested}`));
+		}
 
 		// Cost: bold green (zentui-style)
 		if (this.usage.cost.total > 0) {

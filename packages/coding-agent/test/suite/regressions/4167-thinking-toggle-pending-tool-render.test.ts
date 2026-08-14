@@ -51,6 +51,7 @@ type RenderSessionContextThis = {
 	getRegisteredToolDefinition(toolName: string): undefined;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 	renderSessionItems: RenderSessionItems;
+	handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): void;
 };
 
 type RenderSessionEntries = (
@@ -84,6 +85,11 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		addMessageToChat(message: AgentMessage) {
 			chatContainer.addChild(new Text(message.role, 0, 0));
 		},
+		handleToolExecutionEnd: (
+			InteractiveMode.prototype as unknown as {
+				handleToolExecutionEnd: RenderSessionContextThis["handleToolExecutionEnd"];
+			}
+		).handleToolExecutionEnd,
 	};
 }
 

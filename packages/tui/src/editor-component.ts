@@ -71,4 +71,7 @@ export interface EditorComponent extends Component {
 
 	/** Set max visible items in autocomplete dropdown */
 	setAutocompleteMaxVisible?(maxVisible: number): void;
+
+	/** Dimmed hint shown after the cursor while the editor is empty. */
+	placeholder?: string;
 }

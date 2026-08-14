@@ -1,9 +1,17 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+const NO_COLOR_BACKUP = process.env.NO_COLOR;
+beforeEach(() => {
+	delete process.env.NO_COLOR;
+});
+afterAll(() => {
+	if (NO_COLOR_BACKUP !== undefined) process.env.NO_COLOR = NO_COLOR_BACKUP;
+});
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -230,12 +238,14 @@ describe("AssistantMessageComponent", () => {
 	test("uses configured output padding for user messages", () => {
 		initTheme("dark");
 
+		// User messages render inside a rounded box, so content rows start with
+		// the `│` rail. The output pad shows up as a space right after the rail.
 		const paddedComponent = new UserMessageComponent("hello", undefined, 1);
 		const paddedLines = paddedComponent.render(40).map((line) => stripAnsi(line));
-		expect(paddedLines.some((line) => line.startsWith(" hello"))).toBe(true);
+		expect(paddedLines.some((line) => line.startsWith("│ hello"))).toBe(true);
 
 		const unpaddedComponent = new UserMessageComponent("hello", undefined, 0);
 		const unpaddedLines = unpaddedComponent.render(40).map((line) => stripAnsi(line));
-		expect(unpaddedLines.some((line) => line.startsWith("hello"))).toBe(true);
+		expect(unpaddedLines.some((line) => line.startsWith("│hello"))).toBe(true);
 	});
 });

@@ -28,7 +28,7 @@ function openSelector(harness: Harness, initialModels: readonly Model<Api>[]) {
 	const context = {
 		session: harness.session,
 		settingsManager: harness.settingsManager,
-		showSelector: (
+		showSelectorInPane: (
 			factory: (close: () => void) => {
 				component: ScopedModelsSelectorComponent;
 				dispose?: () => void;
@@ -43,6 +43,7 @@ function openSelector(harness: Harness, initialModels: readonly Model<Api>[]) {
 			dispose = created.dispose;
 		},
 		updateAvailableProviderCount: vi.fn(),
+		paneSelectorShortcuts: vi.fn(() => ""),
 		ui: { requestRender: vi.fn() } as unknown as TUI,
 	};
 

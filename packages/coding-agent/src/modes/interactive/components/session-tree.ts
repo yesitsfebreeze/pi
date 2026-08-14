@@ -1,7 +1,15 @@
-import { type Component, type Focusable, getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
+import {
+	type Component,
+	type Focusable,
+	flattenWithCollapse,
+	getKeybindings,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { live as crewLive, GLYPH } from "../../../core/crew/runner.ts";
 import type { CrewRun } from "../../../core/crew/types.ts";
 import { type LedgerEntry, loadLedger } from "../../../core/session-ledger.ts";
+import { parseSessionEntryLine } from "../../../core/session-manager.ts";
 import { theme as appTheme } from "../theme/theme.ts";
 
 /** A flattened, visible row in the session tree. */
@@ -9,21 +17,46 @@ interface FlatNode {
 	id: string;
 	/** Display label (already styled). */
 	label: string;
-	/** Plain-text label for width math. */
-	rawLabel: string;
 	depth: number;
 	hasChildren: boolean;
 	collapsed: boolean;
 	/** Is this a session (navigable) node vs. a crew (leaf) node? */
 	isSession: boolean;
+	/** Is this the synthetic "+New session" action row? */
+	isNew?: boolean;
+	/** Sub-rows (crew runs) — flattened by the shared tree walk. */
+	children?: FlatNode[];
+	/** Is this the session the host is currently running? Rendered with a marker. */
+	isCurrent?: boolean;
 	/** Session to switch to when this node is activated. */
 	sessionId?: string;
 	cwd?: string;
+	/** Path to the session file (rename + preview). */
+	sessionFile?: string | null;
+	// Column data (session nodes only).
+	/** Display name: session name > first user message > cwd leaf. */
+	colName?: string;
+	colAge?: string;
+	colCrew?: number;
+	/** Last assistant response snippet, for the live preview. */
+	lastResponse?: string;
 }
 
 const EXPANDED_MARKER = "▾ ";
 const COLLAPSED_MARKER = "▸ ";
-const LEAF_MARKER = "  ";
+
+/** Public snapshot of the currently selected row, for preview/rename wiring. */
+export interface SessionTreeNodeInfo {
+	id: string;
+	isSession: boolean;
+	isNew: boolean;
+	isCurrent?: boolean;
+	sessionId?: string;
+	cwd?: string;
+	sessionFile?: string | null;
+	displayName?: string;
+	lastResponse?: string;
+}
 
 /**
  * Session-tree menu rendered inside the bottom scroll pane.
@@ -50,16 +83,19 @@ export class SessionTreeComponent implements Component, Focusable {
 		this._focused = value;
 		this.requestRender();
 		this.onContextUpdate?.();
+		this.onFocusChange?.(value);
 	}
 
 	/** Notifies the host that the context-bar (shortcuts/title) should refresh. */
 	onContextUpdate?: () => void;
+	/** Notifies the host when the tree gains/loses keyboard focus. */
+	onFocusChange?: (focused: boolean) => void;
 	/** View title shown in the sticky header and context bar. */
 	readonly viewTitle = "Sessions";
 	/** Focus-aware, already-styled shortcut hints for the context bar. */
 	shortcutsText(): string {
 		return this.focused
-			? appTheme.fg("muted", "↑↓/jk navigate  ←/→ fold  ↵ switch  Ctrl+S close")
+			? appTheme.fg("muted", "↑↓/jk navigate  r rename  ←/→ fold  ↵ switch  Ctrl+S close")
 			: appTheme.fg("muted", "Ctrl+S focus");
 	}
 
@@ -69,11 +105,32 @@ export class SessionTreeComponent implements Component, Focusable {
 	private requestRender: () => void;
 	/** Collapsed state preserved across refreshes: nodeId → collapsed. */
 	private collapsed = new Map<string, boolean>();
+	/** Session id of the host's currently running session; its row is marked. */
+	private currentSessionId: string | null = null;
+
+	/** Set the host's current session id so its row can be marked. */
+	setCurrentSessionId(id: string | null): void {
+		if (this.currentSessionId === id) return;
+		this.currentSessionId = id;
+		this.refresh();
+	}
 
 	onSelectSession?: (sessionId: string, cwd: string) => void;
+	/** Called when the user activates the "+New session" row (Enter or auto-focus). */
+	onNewSessionFocus?: () => void;
 	onFocusLeave?: () => void;
+	/** Called whenever the selected row changes (keyboard nav + refresh). */
+	onSelectionChange?: (node: SessionTreeNodeInfo | null) => void;
+	/** Called when the user presses the rename key on a selected session. */
+	onRename?: (node: SessionTreeNodeInfo) => void;
 	/** Called with the selected line index (0-based, incl. header offset) so the host ScrollView can keep it visible. */
 	onEnsureVisible?: (line: number) => void;
+
+	/** Cache for brief session info (name, firstMessage), keyed by sessionFile. */
+	private briefCache = new Map<
+		string,
+		{ name?: string; firstMessage?: string; lastResponse?: string; mtimeMs: number }
+	>();
 
 	constructor(requestRender: () => void) {
 		this.requestRender = requestRender;
@@ -114,24 +171,40 @@ export class SessionTreeComponent implements Component, Focusable {
 			else this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			this.requestRender();
 			this.ensureVisible();
+			this.notifySelectionChange();
+			this.maybeAutoFocusNew();
 			return;
 		}
 		if (kb.matches(data, "tui.select.down")) {
 			this.selectedIndex = Math.min(len - 1, this.selectedIndex + 1);
 			this.requestRender();
 			this.ensureVisible();
+			this.notifySelectionChange();
+			this.maybeAutoFocusNew();
 			return;
 		}
 		if (kb.matches(data, "tui.select.pageUp")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 10);
 			this.requestRender();
 			this.ensureVisible();
+			this.notifySelectionChange();
+			this.maybeAutoFocusNew();
 			return;
 		}
 		if (kb.matches(data, "tui.select.pageDown")) {
 			this.selectedIndex = Math.min(len - 1, this.selectedIndex + 10);
 			this.requestRender();
 			this.ensureVisible();
+			this.notifySelectionChange();
+			this.maybeAutoFocusNew();
+			return;
+		}
+		// r renames the selected session (same as the app.session.rename binding).
+		if (data === "r" || data === "R" || kb.matches(data, "app.session.rename")) {
+			const fn = this.flatNodes[this.selectedIndex];
+			if (fn?.isSession && this.onRename) {
+				this.onRename(this.toNodeInfo(fn));
+			}
 			return;
 		}
 		// ← collapses, → expands (toggle either way).
@@ -146,7 +219,9 @@ export class SessionTreeComponent implements Component, Focusable {
 		}
 		if (kb.matches(data, "tui.select.confirm")) {
 			const fn = this.flatNodes[this.selectedIndex];
-			if (fn && fn.sessionId && fn.cwd && this.onSelectSession) {
+			if (fn?.isNew) {
+				if (this.onNewSessionFocus) this.onNewSessionFocus();
+			} else if (fn?.sessionId && fn.cwd && this.onSelectSession) {
 				this.onSelectSession(fn.sessionId, fn.cwd);
 			}
 			return;
@@ -170,29 +245,75 @@ export class SessionTreeComponent implements Component, Focusable {
 		if (this.onEnsureVisible) this.onEnsureVisible(this.selectedLine());
 	}
 
+	/** Current selected row as a public snapshot (null if nothing selected). */
+	getSelectedNode(): SessionTreeNodeInfo | null {
+		const fn = this.flatNodes[this.selectedIndex];
+		return fn ? this.toNodeInfo(fn) : null;
+	}
+
+	private toNodeInfo(fn: FlatNode): SessionTreeNodeInfo {
+		return {
+			id: fn.id,
+			isSession: fn.isSession,
+			isNew: !!fn.isNew,
+			isCurrent: !!fn.isCurrent,
+			sessionId: fn.sessionId,
+			cwd: fn.cwd,
+			sessionFile: fn.sessionFile,
+			displayName: fn.colName,
+			lastResponse: fn.lastResponse,
+		};
+	}
+
+	private notifySelectionChange(): void {
+		if (this.onSelectionChange) this.onSelectionChange(this.getSelectedNode());
+	}
+
 	private renderTreeBody(width: number): string[] {
 		if (this.flatNodes.length === 0) {
-			return [appTheme.fg("muted", "  No live sessions")];
+			return [this.renderRow(this.newSessionNode(), true, width)];
 		}
 
 		const out: string[] = [];
 		for (let i = 0; i < this.flatNodes.length; i++) {
-			const fn = this.flatNodes[i];
-			const indent = "  ".repeat(fn.depth);
-			const marker = fn.hasChildren ? (fn.collapsed ? COLLAPSED_MARKER : EXPANDED_MARKER) : LEAF_MARKER;
-			const raw = `${indent}${marker}${fn.rawLabel}`;
-			const isSelected = i === this.selectedIndex;
-			const styled = isSelected && this.focused ? appTheme.bg("selectedBg", appTheme.bold(raw)) : fn.label;
-			const vis = visibleWidth(styled);
-			const pad = Math.max(0, width - vis);
-			out.push(styled + " ".repeat(pad));
+			out.push(this.renderRow(this.flatNodes[i], i === this.selectedIndex, width));
 		}
 		return out;
 	}
 
+	/** Render a single row with the shared selection gutter + fold marker + label. */
+	private renderRow(fn: FlatNode, isSelected: boolean, width: number): string {
+		// Single-cell gutter: the arrow (→) or a blank space is the only base left
+		// margin — one cell, exactly the space the arrow needs.
+		const gutter = isSelected ? appTheme.fg("accent", "→") : " ";
+		// Tree structure: a fold marker for parents with children, indentation for
+		// nested crew rows. Leaf rows get no extra padding.
+		const treePrefix = fn.hasChildren ? (fn.collapsed ? COLLAPSED_MARKER : EXPANDED_MARKER) : "  ".repeat(fn.depth);
+		const body = isSelected ? appTheme.bold(fn.label) : fn.label;
+		const line = `${gutter}${treePrefix}${body}`;
+		const pad = Math.max(0, width - visibleWidth(line));
+		return line + " ".repeat(pad);
+	}
+
+	/** The synthetic first row: start a brand-new session from a prompt. */
+	private newSessionNode(): FlatNode {
+		return {
+			id: "new-session",
+			label: appTheme.fg("accent", "+New") + appTheme.fg("dim", "  just type to start a new session"),
+			depth: 0,
+			hasChildren: false,
+			collapsed: false,
+			isSession: false,
+			isNew: true,
+		};
+	}
+
 	// ── data ──────────────────────────────────────────────────────
 
-	private refresh(): void {
+	/** Re-read the ledger and rebuild the tree. Public so the host can trigger it
+	 *  when the status bar updates, so a newly created session appears without
+	 *  waiting for the poll. */
+	refresh(): void {
 		let entries: LedgerEntry[];
 		try {
 			entries = loadLedger();
@@ -200,100 +321,248 @@ export class SessionTreeComponent implements Component, Focusable {
 			return;
 		}
 		const liveSessions = entries.filter((e: LedgerEntry) => !e.endedAt);
+		// Hottest first: most recently started at the top, so a freshly created
+		// session lands in the first slot instead of the bottom of the list.
+		liveSessions.sort((a, b) => {
+			const at = Date.parse(a.startedAt);
+			const bt = Date.parse(b.startedAt);
+			return (Number.isNaN(bt) ? 0 : bt) - (Number.isNaN(at) ? 0 : at);
+		});
 		const liveCrew = crewLive();
 
-		// Match crew runs to parent sessions by cwd proximity.
+		// A crew sub-agent is itself a real pi session, so it also has a ledger
+		// entry. Keep it out of the top-level overview and nest it under its
+		// parent instead.
+		const crewSessionIds = new Set(liveCrew.map((r) => r.sessionId));
+		const mainSessions = liveSessions.filter((e) => !crewSessionIds.has(e.sessionId));
+
+		// Nest each crew run under its exact parent session (by parentSessionId).
+		// Runs without a recorded parent (e.g. loaded from old meta) fall back to
+		// matching by cwd, the previous behaviour.
+		const sessionById = new Map(liveSessions.map((e) => [e.sessionId, e] as const));
 		const sessionToCrew = new Map<string, CrewRun[]>();
 		const assignedCrew = new Set<string>();
-		for (const session of liveSessions) {
-			for (const run of liveCrew) {
-				if (assignedCrew.has(run.handle)) continue;
-				if (run.cwd === session.cwd) {
-					if (!sessionToCrew.has(session.sessionId)) sessionToCrew.set(session.sessionId, []);
-					sessionToCrew.get(session.sessionId)!.push(run);
-					assignedCrew.add(run.handle);
-				}
+		for (const run of liveCrew) {
+			let parent = run.parentSessionId ? sessionById.get(run.parentSessionId) : undefined;
+			if (!parent) {
+				parent = liveSessions.find((e) => e.cwd === run.cwd);
 			}
+			if (!parent) continue;
+			if (!sessionToCrew.has(parent.sessionId)) sessionToCrew.set(parent.sessionId, []);
+			sessionToCrew.get(parent.sessionId)!.push(run);
+			assignedCrew.add(run.handle);
 		}
 		const orphanCrew = liveCrew.filter((r) => !assignedCrew.has(r.handle));
 
 		const roots: FlatNode[] = [];
 		const prevSelectedId = this.flatNodes[this.selectedIndex]?.id;
 
-		for (const session of liveSessions) {
+		for (const session of mainSessions) {
 			const crew = sessionToCrew.get(session.sessionId) || [];
 			const cwdBase = session.cwd ? session.cwd.split("/").pop() || session.cwd : "?";
-			const meta = this.sessionMeta(session, crew.length);
-			const rawLabel = meta ? `${cwdBase}  ${meta}` : cwdBase;
+			const brief = this.getSessionBrief(session.sessionFile);
+			const displayName = (brief?.name || brief?.firstMessage || cwdBase).trim();
+			const age = session.startedAt ? this.fmtAge(Date.parse(session.startedAt)) || "" : "";
 			const id = `s-${session.sessionId}`;
 			const hasChildren = crew.length > 0;
 			const collapsed = hasChildren ? (this.collapsed.get(id) ?? false) : false;
+			const isCurrent = this.currentSessionId === session.sessionId;
 			roots.push({
 				id,
-				label: this.styleSession(cwdBase, meta),
-				rawLabel,
+				label: "",
 				depth: 0,
 				hasChildren,
 				collapsed,
 				isSession: true,
+				isCurrent,
 				sessionId: session.sessionId,
 				cwd: session.cwd,
+				sessionFile: session.sessionFile,
+				colName: displayName,
+				colAge: age,
+				colCrew: crew.length,
+				lastResponse: brief?.lastResponse,
+				children: crew.map((run) => this.crewNode(run, 1)),
 			});
-			if (hasChildren && !collapsed) {
-				for (const run of crew) {
-					roots.push(this.crewNode(run, 1));
-				}
-			}
 		}
 
 		for (const run of orphanCrew) {
 			roots.push(this.crewNode(run, 0));
 		}
 
-		this.flatNodes = roots;
+		this.applyColumnLayout(roots);
+		// Shared tree walk (tui TreeList flattenWithCollapse): depth-first, skipping
+		// collapsed subtrees — the same mechanics TreeList renders with. Collapse
+		// state stays in our own map; the walk's isCollapsed predicate reads it.
+		this.flatNodes = [
+			this.newSessionNode(),
+			...flattenWithCollapse(roots, (id) => this.collapsed.get(id) ?? false).map((f) => f.node),
+		];
 
-		// Preserve selection on the same node if it still exists.
+		// Default selection: the first real session (index 1), or +New if it's the only entry.
+		// Preserve previous selection if the same id still exists.
 		if (prevSelectedId) {
 			const idx = this.flatNodes.findIndex((n) => n.id === prevSelectedId);
 			if (idx >= 0) this.selectedIndex = idx;
+			else this.selectedIndex = Math.min(1, Math.max(0, this.flatNodes.length - 1));
+		} else {
+			this.selectedIndex = Math.min(1, Math.max(0, this.flatNodes.length - 1));
 		}
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.flatNodes.length - 1));
+		this.notifySelectionChange();
 		this.requestRender();
 	}
 
-	/** Plain-text meta suffix for width math (mirrors {@link styleSession}). */
-	private sessionMeta(session: LedgerEntry, crewCount: number): string {
-		const parts: string[] = [];
-		const short = this.shortPath(session.cwd);
-		if (short) parts.push(short);
-		if (session.tty && session.tty !== "?") parts.push(session.tty);
-		if (session.startedAt) {
-			const age = this.fmtIsoAge(session.startedAt);
-			if (age) parts.push(age);
+	/** Build column-aligned labels for session nodes after all data is collected. */
+	private applyColumnLayout(nodes: FlatNode[]): void {
+		let wName = 0;
+		let wAge = 0;
+		let wCrew = 0;
+		for (const fn of nodes) {
+			if (!fn.isSession || !fn.colName) continue;
+			wName = Math.max(wName, visibleWidth(fn.colName));
+			const age = fn.colAge ?? "";
+			if (age) wAge = Math.max(wAge, visibleWidth(age));
+			if (fn.colCrew && fn.colCrew > 0) {
+				wCrew = Math.max(wCrew, visibleWidth(`${fn.colCrew} crew`));
+			}
 		}
-		if (crewCount > 0) parts.push(`${crewCount} crew`);
-		return parts.join(" · ");
+
+		for (const fn of nodes) {
+			if (!fn.isSession || !fn.colName) continue;
+			const name = fn.colName.padEnd(wName);
+			const age = wAge > 0 ? (fn.colAge ?? "").padEnd(wAge) : "";
+			const crew = fn.colCrew && fn.colCrew > 0 && wCrew > 0 ? `${fn.colCrew} crew`.padEnd(wCrew) : "";
+
+			const styled = [appTheme.fg("accent", name), appTheme.fg("dim", age), crew ? appTheme.fg("dim", crew) : ""]
+				.filter((c) => c.trim())
+				.join("  ");
+			// Mark the host's current session with a leading ●; reserve the slot
+			// on every row so the name column stays aligned.
+			const marker = fn.isCurrent ? appTheme.fg("warning", "●") : " ";
+			fn.label = `${marker} ${styled}`;
+		}
 	}
 
-	private styleSession(label: string, meta: string): string {
-		const name = appTheme.fg("accent", label);
-		return meta ? `${name}  ${appTheme.fg("dim", meta)}` : name;
+	/** Read brief display info (name, first message, last response) from a session file with caching. */
+	private getSessionBrief(
+		sessionFile: string | null,
+	): { name?: string; firstMessage?: string; lastResponse?: string } | null {
+		if (!sessionFile) return null;
+		let s: { mtimeMs: number; size: number };
+		try {
+			const st = statSync(sessionFile);
+			s = { mtimeMs: st.mtimeMs, size: st.size };
+		} catch {
+			this.briefCache.delete(sessionFile);
+			return null;
+		}
+		const cached = this.briefCache.get(sessionFile);
+		if (cached && cached.mtimeMs === s.mtimeMs) {
+			return cached;
+		}
+		// Read the head for the name/first message, and the tail for the last
+		// assistant response (for the hover/selection preview) without loading
+		// the whole file.
+		try {
+			const HEAD_BUF = 8 * 1024;
+			const TAIL_BUF = 32 * 1024;
+			const head = this.readFileChunk(sessionFile, 0, HEAD_BUF);
+			const tail = this.readFileChunk(sessionFile, Math.max(0, s.size - TAIL_BUF), TAIL_BUF);
+			const info = this.parseSessionBrief(head, tail, s.mtimeMs);
+			if (info) this.briefCache.set(sessionFile, info);
+			return info;
+		} catch {
+			this.briefCache.delete(sessionFile);
+			return null;
+		}
 	}
 
-	/** Shorten a path for inline display: ~/dev/pi, ~ if home. */
-	private shortPath(p: string | undefined): string {
-		if (!p) return "";
-		const home = process.env.HOME || process.env.USERPROFILE || "";
-		if (home && p === home) return "~";
-		if (home && p.startsWith(home + "/")) return "~" + p.slice(home.length);
-		return p;
+	/** Read up to `length` bytes starting at `offset` from a file. */
+	private readFileChunk(path: string, offset: number, length: number): string {
+		const fd = openSync(path, "r");
+		const buffer = Buffer.allocUnsafe(length);
+		let bytesRead: number;
+		try {
+			bytesRead = readSync(fd, buffer, 0, length, offset);
+		} finally {
+			closeSync(fd);
+		}
+		return buffer.toString("utf8", 0, bytesRead);
 	}
 
-	/** Age since an ISO timestamp string. */
-	private fmtIsoAge(iso: string): string {
-		const t = Date.parse(iso);
-		if (Number.isNaN(t)) return "";
-		return this.fmtAge(t);
+	/** Parse name/firstMessage from the head and last assistant response from the tail. */
+	private parseSessionBrief(
+		head: string,
+		tail: string,
+		mtimeMs: number,
+	): { name?: string; firstMessage?: string; lastResponse?: string; mtimeMs: number } | null {
+		let headerSeen = false;
+		let name: string | undefined;
+		let firstMessage: string | undefined;
+		for (const line of head.split("\n")) {
+			const entry = parseSessionEntryLine(line);
+			if (!entry) continue;
+			if (!headerSeen) {
+				if (entry.type !== "session") continue;
+				headerSeen = true;
+				continue;
+			}
+			if (entry.type === "session_info" && name === undefined) {
+				name = (entry.name as string)?.trim() || undefined;
+			}
+			if (entry.type === "message" && firstMessage === undefined) {
+				const msg = (entry as any).message;
+				if (msg?.role === "user") {
+					firstMessage = this.extractMessageText(msg.content)?.trim();
+				}
+			}
+			if (name !== undefined && firstMessage !== undefined) break;
+		}
+
+		// Tail scan: the most recent session_info name wins (renames append at the
+		// end of the file, so the head buffer may not contain the latest name).
+		let tailName: string | undefined;
+		let lastResponse: string | undefined;
+		for (const line of tail.split("\n")) {
+			const entry = parseSessionEntryLine(line);
+			if (!entry) continue;
+			if (entry.type === "session_info") {
+				const n = (entry.name as string)?.trim();
+				if (n) tailName = n;
+			} else if (entry.type === "message") {
+				const msg = (entry as any).message;
+				if (msg?.role === "assistant") {
+					const text = this.extractMessageText(msg.content)?.trim();
+					if (text) lastResponse = text;
+				}
+			}
+		}
+		if (tailName !== undefined) name = tailName;
+
+		if (!headerSeen) return null;
+		return { name, firstMessage, lastResponse, mtimeMs };
+	}
+
+	/** Pull the first text block out of a message content payload. */
+	private extractMessageText(content: unknown): string | undefined {
+		if (Array.isArray(content)) {
+			for (const block of content) {
+				if (block && typeof block === "object" && (block as any).type === "text") {
+					const text = (block as any).text;
+					if (typeof text === "string") return text;
+				}
+			}
+			return undefined;
+		}
+		return typeof content === "string" ? content : undefined;
+	}
+
+	/** If the selected row is the +New entry, auto-focus the editor for typing. */
+	private maybeAutoFocusNew(): void {
+		const fn = this.flatNodes[this.selectedIndex];
+		if (fn?.isNew && this.onNewSessionFocus) {
+			this.onNewSessionFocus();
+		}
 	}
 
 	private crewNode(run: CrewRun, depth: number): FlatNode {
@@ -301,7 +570,6 @@ export class SessionTreeComponent implements Component, Focusable {
 		const taskLine = run.task ? run.task.split("\n")[0].slice(0, 72) : "";
 		const taskSuffix = run.task && run.task.length > 72 ? "…" : "";
 		const age = this.fmtAge(run.started);
-		const rawLabel = `${glyph} ${run.handle}  ${taskLine}${taskSuffix}  ${age}`;
 		const isRunning = run.state === "running";
 		const styled = isRunning
 			? appTheme.fg("success", `${glyph} `) +
@@ -312,13 +580,14 @@ export class SessionTreeComponent implements Component, Focusable {
 		return {
 			id: `crew-${run.handle}`,
 			label: styled,
-			rawLabel,
 			depth,
 			hasChildren: false,
 			collapsed: false,
 			isSession: false,
 			sessionId: run.sessionId,
 			cwd: run.cwd,
+			colName: run.handle,
+			lastResponse: run.text || undefined,
 		};
 	}
 

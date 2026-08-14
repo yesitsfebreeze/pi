@@ -318,7 +318,8 @@ describe("TuiAltScreen", () => {
 
 	it("chains unused wheel delta to an outer scroll view", async () => {
 		const terminal = new VirtualTerminal(20, 4);
-		const tui = new TuiAltScreen(terminal, undefined, undefined, { wheelScrollLines: 3 });
+		// Disable inertia so each wheel event scrolls a fixed wheelScrollLines amount.
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { wheelScrollLines: 3, wheelScrollTrail: 1 });
 		const inner = new ScrollView(new Text("i1\ni2\ni3\ni4\ni5\ni6", 0, 0));
 		const outer = new ScrollView(
 			new VStack([{ component: inner, basis: 2 }, new Text("tail1\ntail2\ntail3\ntail4\ntail5", 0, 0)]),
@@ -337,6 +338,50 @@ describe("TuiAltScreen", () => {
 		await terminal.waitForRender();
 		assert.strictEqual(inner.scrollTop, 4);
 		assert.strictEqual(outer.scrollTop, 2);
+		tui.stop();
+	});
+
+	it("accelerates consecutive wheel events up to the trail length", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		const scrollView = new ScrollView(
+			new Text(Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ primary: true },
+		);
+		tui.setLayoutRoot(scrollView);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Six rapid wheel-down events: 1 + 2 + 3 + 4 + 5 + 5 = 20 lines (default trail 5).
+		for (let i = 0; i < 6; i++) {
+			terminal.sendInput("\x1b[<65;1;1M");
+		}
+		await terminal.waitForRender();
+		assert.strictEqual(scrollView.scrollTop, 20);
+		tui.stop();
+	});
+
+	it("resets the wheel inertia trail on direction reversal", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal);
+		const scrollView = new ScrollView(
+			new Text(Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ primary: true },
+		);
+		tui.setLayoutRoot(scrollView);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Two wheel-down events scroll 1 + 2 = 3 lines.
+		terminal.sendInput("\x1b[<65;1;1M");
+		terminal.sendInput("\x1b[<65;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(scrollView.scrollTop, 3);
+
+		// Reversing direction restarts the trail at one line.
+		terminal.sendInput("\x1b[<64;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(scrollView.scrollTop, 2);
 		tui.stop();
 	});
 

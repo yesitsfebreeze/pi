@@ -305,6 +305,28 @@ function bgAnsi(color: string | number, mode: ColorMode): string {
 	throw new Error(`Invalid color value: ${color}`);
 }
 
+/**
+ * Pick the SGR sequence that undoes an opening color/attribute sequence.
+ *
+ * A plain foreground/background reset (`\x1b[39m`/`\x1b[49m`) only restores the
+ * default palette slot — it does NOT clear attribute codes like reverse
+ * (`\x1b[7m`), dim (`\x1b[2m`) or bold (`\x1b[1m`). When a theme maps a colour to
+ * one of those attributes (e.g. the terminal-native theme's `selectedBg`/
+ * `accent` = "reverse"), the attribute otherwise leaks into every subsequent
+ * line, visually "selecting" all rows below the highlighted one.
+ */
+function resetAnsiFor(openAnsi: string, colorReset: string): string {
+	switch (openAnsi) {
+		case "\x1b[7m":
+			return "\x1b[27m"; // reset reverse
+		case "\x1b[2m":
+		case "\x1b[1m":
+			return "\x1b[22m"; // reset bold + dim
+		default:
+			return colorReset;
+	}
+}
+
 function resolveVarRefs(
 	value: ColorValue,
 	vars: Record<string, ColorValue>,
@@ -396,13 +418,13 @@ export class Theme {
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.fgColors.get(color);
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
-		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
+		return `${ansi}${text}${resetAnsiFor(ansi, "\x1b[39m")}`;
 	}
 
 	bg(color: ThemeBg, text: string): string {
 		const ansi = this.bgColors.get(color);
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
-		return `${ansi}${text}\x1b[49m`; // Reset only background color
+		return `${ansi}${text}${resetAnsiFor(ansi, "\x1b[49m")}`;
 	}
 
 	bold(text: string): string {

@@ -203,6 +203,8 @@ interface EditorState {
 	lines: string[];
 	cursorLine: number;
 	cursorCol: number;
+	/** Anchor of the text selection (line+col). When set, the range from anchor to cursor is selected. */
+	selectionAnchor?: { line: number; col: number };
 }
 
 /** Undo snapshot: editor text state plus the paste registry. */
@@ -216,6 +218,10 @@ interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
 	cursorPos?: number;
+	/** Start column of selection highlight on this visual line (inclusive). */
+	selStart?: number;
+	/** End column of selection highlight on this visual line (exclusive). */
+	selEnd?: number;
 }
 
 export interface EditorTheme {
@@ -325,6 +331,8 @@ export class Editor implements Component, Focusable {
 	public disableSubmit: boolean = false;
 	/** Called when ArrowDown is pressed at the last visual line end. */
 	public onCursorDownAtEnd?: () => void;
+	/** Dimmed hint shown after the cursor while the editor is empty. */
+	public placeholder?: string;
 
 	constructor(tui: TUI, theme: EditorTheme, options: EditorOptions = {}) {
 		this.tui = tui;
@@ -344,6 +352,97 @@ export class Editor implements Component, Focusable {
 	/** Segment text with paste-marker awareness, only merging markers with valid IDs. */
 	private segment(text: string, mode: "word" | "grapheme"): Iterable<Intl.SegmentData> {
 		return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds());
+	}
+
+	// ── selection helpers ───────────────────────────────────────────────
+
+	/** Clear selection (non-shift movement calls this). */
+	private clearSelection(): void {
+		delete this.state.selectionAnchor;
+	}
+
+	/** True when there is a non-empty selection. */
+	private hasSelection(): boolean {
+		if (!this.state.selectionAnchor) return false;
+		const a = this.state.selectionAnchor;
+		return a.line !== this.state.cursorLine || a.col !== this.state.cursorCol;
+	}
+
+	/**
+	 * Start or extend the selection. If no anchor is set, snap it to the
+	 * cursor position (before movement). If one is already set, keep it.
+	 */
+	private extendOrStartSelection(): void {
+		if (!this.state.selectionAnchor) {
+			this.state.selectionAnchor = {
+				line: this.state.cursorLine,
+				col: this.state.cursorCol,
+			};
+		}
+	}
+
+	/** Return the normalized selection range as {start, end} with line+col. */
+	private selectedRange(): { start: { line: number; col: number }; end: { line: number; col: number } } | null {
+		if (!this.hasSelection()) return null;
+		const anchor = this.state.selectionAnchor!;
+		const cursor = { line: this.state.cursorLine, col: this.state.cursorCol };
+		// Compare position: first by line, then by col
+		const anchorFirst = anchor.line < cursor.line || (anchor.line === cursor.line && anchor.col <= cursor.col);
+		return anchorFirst ? { start: anchor, end: cursor } : { start: cursor, end: anchor };
+	}
+
+	/** Get the selected text. */
+	getSelectedText(): string {
+		const range = this.selectedRange();
+		if (!range) return "";
+		const { start, end } = range;
+		if (start.line === end.line) {
+			return (this.state.lines[start.line] || "").slice(start.col, end.col);
+		}
+		const parts: string[] = [];
+		parts.push((this.state.lines[start.line] || "").slice(start.col));
+		for (let i = start.line + 1; i < end.line; i++) {
+			parts.push(this.state.lines[i] || "");
+		}
+		parts.push((this.state.lines[end.line] || "").slice(0, end.col));
+		return parts.join("\n");
+	}
+
+	/**
+	 * Delete the selected range and clear the selection.
+	 *
+	 * Does the same bookkeeping as every other delete path (see
+	 * `handleBackspace`): leave history browsing, snapshot for undo, then notify
+	 * `onChange` and refresh autocomplete. Without it, deleting a selection was
+	 * not undoable and never reached consumers, so their copy of the text went
+	 * stale and an open autocomplete popup kept pointing at deleted text.
+	 */
+	private deleteSelection(): void {
+		const range = this.selectedRange();
+		if (!range) return;
+		const { start, end } = range;
+
+		this.exitHistoryBrowsing();
+		this.lastAction = null;
+		this.pushUndoSnapshot();
+
+		if (start.line === end.line) {
+			const line = this.state.lines[start.line] || "";
+			this.state.lines[start.line] = line.slice(0, start.col) + line.slice(end.col);
+			this.state.cursorLine = start.line;
+			this.state.cursorCol = start.col;
+		} else {
+			const firstLine = this.state.lines[start.line] || "";
+			const lastLine = this.state.lines[end.line] || "";
+			const merged = firstLine.slice(0, start.col) + lastLine.slice(end.col);
+			this.state.lines.splice(start.line, end.line - start.line + 1, merged);
+			this.state.cursorLine = start.line;
+			this.state.cursorCol = start.col;
+		}
+		this.clearSelection();
+		this.setCursorCol(this.state.cursorCol);
+		if (this.onChange) this.onChange(this.getText());
+		if (this.autocompleteState) this.updateAutocomplete();
 	}
 
 	getPaddingX(): number {
@@ -515,31 +614,57 @@ export class Editor implements Component, Focusable {
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
 
+			// Apply selection highlighting first (before cursor overlay)
+			const selStart = layoutLine.selStart;
+			const selEnd = layoutLine.selEnd;
+			const hasSelectionHighlight = selStart !== undefined && selEnd !== undefined && selStart < selEnd;
+			if (hasSelectionHighlight) {
+				const before = displayText.slice(0, selStart!);
+				const selected = displayText.slice(selStart!, selEnd!);
+				const after = displayText.slice(selEnd!);
+				displayText = `${before}\x1b[7m${selected}\x1b[27m${after}`;
+			}
+
 			// Add cursor if this line has it
 			if (layoutLine.hasCursor && layoutLine.cursorPos !== undefined) {
-				const before = displayText.slice(0, layoutLine.cursorPos);
-				const after = displayText.slice(layoutLine.cursorPos);
+				const cursorPos = layoutLine.cursorPos;
 
-				// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
+				// If cursor is inside selection, let the selection highlight suffice —
+				// the hardware cursor plus reverse video is enough visual feedback.
+				const inSel = hasSelectionHighlight && cursorPos >= selStart! && cursorPos < selEnd!;
+
+				const before = displayText.slice(0, cursorPos);
+				const after = displayText.slice(cursorPos);
 				const marker = emitCursorMarker ? CURSOR_MARKER : "";
 
 				if (after.length > 0) {
-					// Cursor is on a character (grapheme) - replace it with highlighted version
-					// Get the first grapheme from 'after'
 					const afterGraphemes = [...this.segment(after, "grapheme")];
 					const firstGrapheme = afterGraphemes[0]?.segment || "";
 					const restAfter = after.slice(firstGrapheme.length);
-					const cursor = `\x1b[7m${firstGrapheme}\x1b[0m`;
-					displayText = before + marker + cursor + restAfter;
-					// lineVisibleWidth stays the same - we're replacing, not adding
+					if (inSel) {
+						// Cursor inside selection — just emit the marker without extra reverse
+						displayText = before + marker + firstGrapheme + restAfter;
+					} else {
+						const cursor = `\x1b[7m${firstGrapheme}\x1b[27m`;
+						displayText = before + marker + cursor + restAfter;
+					}
 				} else {
-					// Cursor is at the end - add highlighted space
-					const cursor = "\x1b[7m \x1b[0m";
-					displayText = before + marker + cursor;
-					lineVisibleWidth = lineVisibleWidth + 1;
-					// If cursor overflows content width into the padding, flag it
-					if (lineVisibleWidth > contentWidth && paddingX > 0) {
-						cursorInPadding = true;
+					// Cursor is at the end
+					if (inSel) {
+						// Cursor at end inside selection — no extra space needed
+						displayText = before + marker;
+					} else {
+						const cursor = "\x1b[7m \x1b[27m";
+						let suffix = "";
+						if (this.placeholder && this.isEditorEmpty()) {
+							suffix = `\x1b[90m${this.placeholder}\x1b[0m`;
+						}
+						displayText = before + marker + cursor + suffix;
+						lineVisibleWidth = lineVisibleWidth + 1 + (suffix ? visibleWidth(this.placeholder ?? "") : 0);
+						// If cursor overflows content width into the padding, flag it
+						if (lineVisibleWidth > contentWidth && paddingX > 0) {
+							cursorInPadding = true;
+						}
 					}
 				}
 			}
@@ -693,28 +818,52 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		// Deletion actions
+		// Deletion actions — handle selection first
 		if (kb.matches(data, "tui.editor.deleteToLineEnd")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.deleteToEndOfLine();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.deleteToLineStart")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.deleteToStartOfLine();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.deleteWordBackward")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.deleteWordBackwards();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.deleteWordForward")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.deleteWordForward();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, "shift+backspace")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.handleBackspace();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.deleteCharForward") || matchesKey(data, "shift+delete")) {
+			if (this.hasSelection()) {
+				this.deleteSelection();
+				return;
+			}
 			this.handleForwardDelete();
 			return;
 		}
@@ -741,20 +890,94 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
+		// ── shift+movement: selection extension ─────────────────────────
+
+		// Shift+Home / Shift+End
+		if (matchesKey(data, "shift+home")) {
+			this.extendOrStartSelection();
+			this.moveToLineStart();
+			return;
+		}
+		if (matchesKey(data, "shift+end")) {
+			this.extendOrStartSelection();
+			this.moveToLineEnd();
+			return;
+		}
+
+		// Shift+Arrow keys
+		if (matchesKey(data, "shift+left")) {
+			this.extendOrStartSelection();
+			this.moveCursor(0, -1);
+			return;
+		}
+		if (matchesKey(data, "shift+right")) {
+			this.extendOrStartSelection();
+			this.moveCursor(0, 1);
+			return;
+		}
+		if (matchesKey(data, "shift+up")) {
+			this.extendOrStartSelection();
+			if (this.isOnFirstVisualLine()) {
+				this.moveToLineStart();
+			} else {
+				this.moveCursor(-1, 0);
+			}
+			return;
+		}
+		if (matchesKey(data, "shift+down")) {
+			this.extendOrStartSelection();
+			if (this.isOnLastVisualLine()) {
+				this.moveToLineEnd();
+			} else {
+				this.moveCursor(1, 0);
+			}
+			return;
+		}
+
+		// Shift+Ctrl+Left / Shift+Ctrl+Right — select by word
+		if (matchesKey(data, "shift+ctrl+left")) {
+			this.extendOrStartSelection();
+			this.moveWordBackwards();
+			return;
+		}
+		if (matchesKey(data, "shift+ctrl+right")) {
+			this.extendOrStartSelection();
+			this.moveWordForwards();
+			return;
+		}
+
+		// Shift+PageUp / Shift+PageDown
+		if (matchesKey(data, "shift+pageUp")) {
+			this.extendOrStartSelection();
+			this.pageScroll(-1);
+			return;
+		}
+		if (matchesKey(data, "shift+pageDown")) {
+			this.extendOrStartSelection();
+			this.pageScroll(1);
+			return;
+		}
+
+		// ── regular cursor movement (clear selection) ───────────────────
+
 		// Cursor movement actions
 		if (kb.matches(data, "tui.editor.cursorLineStart")) {
+			this.clearSelection();
 			this.moveToLineStart();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorLineEnd")) {
+			this.clearSelection();
 			this.moveToLineEnd();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorWordLeft")) {
+			this.clearSelection();
 			this.moveWordBackwards();
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorWordRight")) {
+			this.clearSelection();
 			this.moveWordForwards();
 			return;
 		}
@@ -796,6 +1019,7 @@ export class Editor implements Component, Focusable {
 
 		// Arrow key navigation (with history support)
 		if (kb.matches(data, "tui.editor.cursorUp")) {
+			this.clearSelection();
 			if (
 				this.isOnFirstVisualLine() &&
 				(this.isEditorEmpty() || this.historyIndex > -1 || this.state.cursorCol === 0)
@@ -810,6 +1034,7 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorDown")) {
+			this.clearSelection();
 			if (this.historyIndex > -1 && this.isOnLastVisualLine()) {
 				this.navigateHistory(1);
 			} else if (this.isOnLastVisualLine()) {
@@ -825,20 +1050,24 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorRight")) {
+			this.clearSelection();
 			this.moveCursor(0, 1);
 			return;
 		}
 		if (kb.matches(data, "tui.editor.cursorLeft")) {
+			this.clearSelection();
 			this.moveCursor(0, -1);
 			return;
 		}
 
 		// Page up/down - scroll by page and move cursor
 		if (kb.matches(data, "tui.editor.pageUp")) {
+			this.clearSelection();
 			this.pageScroll(-1);
 			return;
 		}
 		if (kb.matches(data, "tui.editor.pageDown")) {
+			this.clearSelection();
 			this.pageScroll(1);
 			return;
 		}
@@ -953,6 +1182,52 @@ export class Editor implements Component, Focusable {
 						});
 					}
 				}
+			}
+		}
+
+		// Annotate selection ranges. Only runs when a selection is active.
+		const range = this.selectedRange();
+		if (range) {
+			const { start, end } = range;
+			for (const ll of layoutLines) {
+				delete ll.selStart;
+				delete ll.selEnd;
+			}
+
+			let vlIdx = 0;
+			for (let logLine = 0; logLine < this.state.lines.length; logLine++) {
+				const line = this.state.lines[logLine] || "";
+				// Count VLs for this logical line by looking ahead
+				if (vlIdx >= layoutLines.length) break;
+				let vlCount = 1;
+				// If the line doesn't fit in contentWidth, it produces multiple VLs.
+				// Use wordWrapLine to determine how many chunks.
+				if (visibleWidth(line) > contentWidth) {
+					vlCount = wordWrapLine(line, contentWidth, [...this.segment(line, "grapheme")]).length;
+				}
+
+				if (logLine >= start.line && logLine <= end.line) {
+					const selFrom = logLine === start.line ? start.col : 0;
+					const selTo = logLine === end.line ? end.col : line.length;
+					const chunks =
+						vlCount > 1
+							? wordWrapLine(line, contentWidth, [...this.segment(line, "grapheme")])
+							: [{ text: line, startIndex: 0, endIndex: line.length }];
+
+					for (let v = 0; v < Math.min(vlCount, chunks.length); v++) {
+						const ll = layoutLines[vlIdx + v];
+						if (!ll) break;
+						const chunk = chunks[v];
+						if (!chunk) break;
+						const sFrom = Math.max(selFrom, chunk.startIndex);
+						const sTo = Math.min(selTo, chunk.endIndex);
+						if (sFrom < sTo) {
+							ll.selStart = sFrom - chunk.startIndex;
+							ll.selEnd = sTo - chunk.startIndex;
+						}
+					}
+				}
+				vlIdx += vlCount;
 			}
 		}
 
@@ -1076,6 +1351,13 @@ export class Editor implements Component, Focusable {
 	// All the editor methods from before...
 	private insertCharacter(char: string, skipUndoCoalescing?: boolean): void {
 		this.exitHistoryBrowsing();
+
+		// If there's a selection, delete it first
+		if (this.hasSelection()) {
+			this.pushUndoSnapshot();
+			this.deleteSelection();
+			// Fall through to insert
+		}
 
 		// Undo coalescing (fish-style):
 		// - Consecutive word chars coalesce into one undo unit

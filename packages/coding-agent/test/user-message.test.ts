@@ -1,12 +1,22 @@
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import { RoundedBox, renderRoundedBox } from "../src/modes/interactive/components/rounded-box.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
+const NO_COLOR_BACKUP = process.env.NO_COLOR;
+beforeEach(() => {
+	delete process.env.NO_COLOR;
+});
+afterAll(() => {
+	if (NO_COLOR_BACKUP !== undefined) process.env.NO_COLOR = NO_COLOR_BACKUP;
+});
+
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
-const BG_RESET = "\x1b[49m";
+/** Strip ANSI (CSI) and OSC 133 zone markers so border glyphs are comparable. */
+const plain = (line: string): string => stripAnsi(line).replace(/\x1b\]133;[A-C]\x07/g, "");
 
 describe("UserMessageComponent", () => {
 	test("keeps user message height stable while moving closing OSC markers off line end", () => {
@@ -17,11 +27,34 @@ describe("UserMessageComponent", () => {
 
 		expect(lines).toHaveLength(3);
 		expect(lines[0]).toContain(OSC133_ZONE_START);
-		expect(lines[0].endsWith(BG_RESET)).toBe(true);
 		expect(lines[0]).not.toContain(OSC133_ZONE_END);
 		expect(lines[1]).toContain("hello");
 		expect(lines[2].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
-		expect(lines[2].endsWith(BG_RESET)).toBe(true);
+	});
+
+	test("draws its border via the shared RoundedBox utility (not its own implementation)", () => {
+		initTheme("dark");
+
+		// UserMessageComponent must reuse the shared rounded-box utility rather than
+		// drawing box glyphs itself — it extends RoundedBox and adds no box chars.
+		expect(new UserMessageComponent("x")).toBeInstanceOf(RoundedBox);
+
+		const component = new UserMessageComponent("hello world");
+		const rendered = component.render(20).map(plain);
+
+		// The user message must be wrapped in a rounded box: light glyphs ╭─╮ │ ╰─╯.
+		expect(rendered[0]).toMatch(/^╭─+╮$/);
+		expect(rendered[rendered.length - 1]).toMatch(/^╰─+╯$/);
+		for (let i = 1; i < rendered.length - 1; i++) {
+			expect(rendered[i].startsWith("│")).toBe(true);
+			expect(rendered[i].endsWith("│")).toBe(true);
+		}
+
+		// The border lines must match what the shared renderRoundedBox emits for
+		// the same content, so a future drift to a hand-rolled border would fail.
+		const inner = rendered.slice(1, -1).map((l) => l.slice(1, -1));
+		const utility = renderRoundedBox({ lines: inner, width: 20, leftPad: 1, rightPad: 1, sizeToContent: true });
+		expect(rendered).toEqual(utility);
 	});
 
 	test("chains Markdown transformers with user message context", () => {

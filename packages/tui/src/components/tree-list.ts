@@ -27,18 +27,50 @@ const EXPANDED_MARKER = NO_COLOR ? "v " : "▾ ";
 const COLLAPSED_MARKER = NO_COLOR ? "> " : "▸ ";
 const LEAF_MARKER = "  ";
 
+/** A tree node that can be flattened: id + optional children + optional collapsed flag. */
+export interface FlattenableNode {
+	id: string;
+	children?: FlattenableNode[];
+	collapsed?: boolean;
+}
+
 /** Flat visible node produced by flattening the tree. */
-interface FlatNode {
-	node: TreeNode;
+export interface FlatNode<T extends FlattenableNode = FlattenableNode> {
+	node: T;
 	depth: number;
 	index: number; // position in flattened visible list
+}
+
+/**
+ * Depth-first walk of the tree, skipping collapsed subtrees. Shared by the
+ * TreeList component and the session-tree, which flattens its own richer node
+ * type over the same mechanics. A node is hidden if its own `collapsed` flag
+ * is set OR `isCollapsed(id)` reports it — the second form lets a caller keep
+ * collapse state in its own map instead of on the node.
+ */
+export function flattenWithCollapse<T extends FlattenableNode>(
+	roots: T[],
+	isCollapsed?: (id: string) => boolean,
+): FlatNode<T>[] {
+	const out: FlatNode<T>[] = [];
+	const walk = (nodes: T[], depth: number) => {
+		for (const n of nodes) {
+			out.push({ node: n, depth, index: out.length });
+			const kids = n.children;
+			if (kids && kids.length > 0 && !n.collapsed && !isCollapsed?.(n.id)) {
+				walk(kids as T[], depth + 1);
+			}
+		}
+	};
+	walk(roots, 0);
+	return out;
 }
 
 export class TreeList implements Component, Focusable {
 	focused: boolean = false;
 	private theme: TreeListTheme;
 	private roots: TreeNode[] = [];
-	private flatNodes: FlatNode[] = [];
+	private flatNodes: FlatNode<TreeNode>[] = [];
 	private selectedIndex = 0;
 
 	public onSelect?: (node: TreeNode) => void;
@@ -148,17 +180,7 @@ export class TreeList implements Component, Focusable {
 	}
 
 	private rebuild(): void {
-		this.flatNodes = [];
-		const walk = (nodes: TreeNode[], depth: number) => {
-			for (const n of nodes) {
-				this.flatNodes.push({ node: n, depth, index: this.flatNodes.length });
-				const kids = n.children;
-				if (kids && kids.length > 0 && !n.collapsed) {
-					walk(kids, depth + 1);
-				}
-			}
-		};
-		walk(this.roots, 0);
+		this.flatNodes = flattenWithCollapse(this.roots);
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.flatNodes.length - 1));
 		this.onRequestRender?.();
 	}

@@ -10,7 +10,9 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
  * Component that renders a complete assistant message — no border.
- * Only user messages (heavy) and plugin notifications (DynamicBorder) get borders.
+ * Only user messages (light rounded box) and plugin notifications (DynamicBorder)
+ * get borders. Both route through the shared `rounded-box.ts` / `dynamic-border.ts`
+ * utilities — no component draws box glyphs by hand.
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;

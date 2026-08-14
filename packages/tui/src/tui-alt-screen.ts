@@ -30,6 +30,7 @@ import {
 } from "./terminal-image.ts";
 import {
 	type Component,
+	Container,
 	CURSOR_MARKER,
 	compositeTuiLine,
 	type OverlayHandle,
@@ -143,6 +144,12 @@ interface SearchHighlightRange {
 export interface TuiAltScreenOptions {
 	/** Number of logical lines moved for each mouse-wheel event. */
 	wheelScrollLines?: number;
+	/**
+	 * Inertia trail: consecutive wheel events in the same direction accelerate the
+	 * per-event scroll distance up to this many lines (default 5). A pause or a
+	 * direction reversal resets the trail to one line.
+	 */
+	wheelScrollTrail?: number;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
 	mouse?: boolean;
 	/** Style a non-current transcript search match. */
@@ -187,11 +194,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pressedUrl?: string;
 	private selectionDragged = false;
 	private readonly wheelScrollLines: number;
+	private wheelScrollTrail: number;
+	private wheelBurstCount = 0;
+	private wheelBurstDirection: -1 | 1 = 1;
+	private wheelBurstTimer: NodeJS.Timeout | undefined;
 	private readonly mouseEnabled: boolean;
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
+	/** True when the current render was triggered by a scroll operation only (not content change). */
+	private scrollOnlyFrame = false;
 
 	constructor(
 		terminal: Terminal,
@@ -209,6 +222,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScrollLines = Math.max(1, Math.floor(options.wheelScrollLines ?? 1));
+		this.wheelScrollTrail = Math.max(1, Math.floor(options.wheelScrollTrail ?? 5));
 		this.mouseEnabled = options.mouse ?? true;
 		this.searchMatchStyle = options.searchMatchStyle ?? ((text) => `\x1b[4m${text}\x1b[24m`);
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
@@ -385,18 +399,26 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	scrollBy(lines: number): void {
+		this.scrollOnlyFrame = true;
 		this.getPrimaryScrollView().scrollBy(lines);
 		this.requestRender();
 	}
 
 	scrollToTop(): void {
+		this.scrollOnlyFrame = true;
 		this.getPrimaryScrollView().scrollToStart();
 		this.requestRender();
 	}
 
 	scrollToBottom(): void {
+		this.scrollOnlyFrame = true;
 		this.getPrimaryScrollView().scrollToEnd();
 		this.requestRender();
+	}
+
+	/** Set the inertia trail length (max accelerated lines per wheel event). */
+	setWheelScrollTrail(trail: number): void {
+		this.wheelScrollTrail = Math.max(1, Math.floor(trail));
 	}
 
 	private scrollToPrompt(direction: -1 | 1): void {
@@ -407,6 +429,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
 			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
+			this.scrollOnlyFrame = true;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -526,6 +549,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private handleViewportInput(data: string): { consume?: boolean } | undefined {
+		// An embedded terminal editor owns its keystrokes: don't let the viewport
+		// intercept scrolling/search/mouse keys that the editor needs.
+		const focused = this.getFocusedComponent();
+		if (focused && (focused as Component & { capturesAllInput?: boolean }).capturesAllInput) {
+			return undefined;
+		}
 		if (data === FOCUS_OUT) {
 			const hadActiveSelection = this.selectionPressActive;
 			const hadNonEmptyActiveSelection = hadActiveSelection && this.getSelectionBounds() !== undefined;
@@ -657,7 +686,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private routeWheel(event: WheelEvent): void {
-		let remaining = event.direction * this.wheelScrollLines;
+		this.scrollOnlyFrame = true;
+		let remaining = event.direction * this.accelerateWheel(event.direction);
 		const seen = new Set<ScrollView>();
 		for (const scrollView of this.currentLayout ? getScrollViewsAt(this.currentLayout, event.x, event.y) : []) {
 			seen.add(scrollView);
@@ -668,6 +698,29 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (remaining !== 0 && !seen.has(primary)) primary.scrollBy(remaining);
 		this.updateScrollbarHover(event.x, event.y);
 		this.requestRender();
+	}
+
+	/** Interval (ms) after the last wheel event before the inertia trail resets. */
+	private static readonly WHEEL_BURST_RESET_MS = 200;
+
+	/**
+	 * Compute the scroll distance for this wheel event, accelerating consecutive
+	 * events in the same direction up to the configured trail length. A direction
+	 * reversal or a pause (WHEEL_BURST_RESET_MS) restarts the trail at one line.
+	 */
+	private accelerateWheel(direction: -1 | 1): number {
+		if (this.wheelBurstDirection !== direction) {
+			this.wheelBurstDirection = direction;
+			this.wheelBurstCount = 0;
+		}
+		this.wheelBurstCount = Math.min(this.wheelScrollTrail, this.wheelBurstCount + 1);
+		if (this.wheelBurstTimer) clearTimeout(this.wheelBurstTimer);
+		this.wheelBurstTimer = setTimeout(() => {
+			this.wheelBurstTimer = undefined;
+			this.wheelBurstCount = 0;
+		}, TuiAltScreen.WHEEL_BURST_RESET_MS);
+		this.wheelBurstTimer.unref();
+		return this.wheelScrollLines * this.wheelBurstCount;
 	}
 
 	private parseSgrMouseEvent(data: string): SgrMouseEvent | undefined {
@@ -743,6 +796,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				);
 				const scrollTop =
 					maxThumbOffset === 0 ? 0 : Math.round((thumbOffset / maxThumbOffset) * geometry.maxScrollTop);
+				this.scrollOnlyFrame = true;
 				this.scrollbarDrag.scrollView.scrollTo(scrollTop);
 			}
 			return true;
@@ -1225,9 +1279,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
-		let nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+
+		// When content changed (not a scroll-only frame), invalidate ScrollView
+		// content caches so they re-render. Scroll-only frames reuse cached
+		// content, avoiding expensive re-renders of the full transcript.
+		if (!this.scrollOnlyFrame) {
+			this.invalidateScrollContentCaches(root);
+		}
+
+		let nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender(), {
+			useScrollContentCache: this.scrollOnlyFrame,
+		});
 		if (this.refreshSearch(nextLayout)) {
-			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender(), {
+				useScrollContentCache: false,
+			});
 		}
 		let screen = nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
 		screen = this.applySearchHighlights(screen, nextLayout);
@@ -1287,5 +1353,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
 		this.currentLayout = nextLayout;
+		this.scrollOnlyFrame = false;
+	}
+
+	/** Walk the component tree and invalidate cached content for every ScrollView. */
+	private invalidateScrollContentCaches(component: Component): void {
+		if (component instanceof ScrollView) {
+			component.invalidateContent();
+		}
+		if (component instanceof Container) {
+			for (const child of component.children) {
+				this.invalidateScrollContentCaches(child);
+			}
+		}
 	}
 }

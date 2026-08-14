@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { parseRecap, parseRecapPartial, stripRecapBlock } from "../src/modes/interactive/recap-component.ts";
+import {
+	parseRecap,
+	parseRecapPartial,
+	RecapComponent,
+	stripRecapBlock,
+} from "../src/modes/interactive/recap-component.ts";
+import type { Theme } from "../src/modes/interactive/theme/theme.ts";
+
+const stubTheme = { fg: (_color: string, text: string) => text } as unknown as Theme;
 
 describe("parseRecap", () => {
 	test("parses a well-formed block", () => {
@@ -45,6 +53,35 @@ describe("stripRecapBlock", () => {
 		const text = "body\n<recap>\nMISSION: a\nTASK: b\nNEXT: c\n</recap>";
 		expect(stripRecapBlock(text)).toBe("body");
 	});
+
+	test("drops an unclosed recap block while streaming", () => {
+		const text = "body\n<recap>\nMISSION: a\nTASK: b";
+		expect(stripRecapBlock(text)).toBe("body");
+	});
+
+	test("drops an empty unclosed recap tag while streaming", () => {
+		expect(stripRecapBlock("body\n<recap>")).toBe("body");
+	});
+
+	test("returns empty when a recap opens mid-stream with no preceding body", () => {
+		expect(stripRecapBlock("<recap>\nMISSION: a")).toBe("");
+	});
+
+	test("leaves text before an unclosed recap untouched", () => {
+		const text = "first paragraph\n\nsecond paragraph\n<recap>\nNEXT: ";
+		expect(stripRecapBlock(text)).toBe("first paragraph\n\nsecond paragraph");
+	});
+
+	test("drops a trailing partial opening tag split across stream tokens", () => {
+		expect(stripRecapBlock("body\n<recap")).toBe("body");
+		expect(stripRecapBlock("body\n<rec")).toBe("body");
+		expect(stripRecapBlock("body\n<re")).toBe("body");
+	});
+
+	test("leaves a bare trailing '<' alone (likely ordinary content)", () => {
+		expect(stripRecapBlock("a < b")).toBe("a < b");
+		expect(stripRecapBlock("value is ")).toBe("value is");
+	});
 });
 
 describe("parseRecapPartial", () => {
@@ -80,5 +117,31 @@ describe("parseRecapPartial", () => {
 
 	test("returns null when block has no recognized fields", () => {
 		expect(parseRecapPartial("<recap>\nNOISE: x\n</recap>")).toBeNull();
+	});
+});
+
+describe("RecapComponent.render", () => {
+	test("renders nothing when no recap is set", () => {
+		const component = new RecapComponent({ requestRender: () => {}, theme: stubTheme });
+		try {
+			expect(component.render(40)).toEqual([]);
+		} finally {
+			component.dispose();
+		}
+	});
+
+	test("renders three recap lines plus a separator once set", () => {
+		const component = new RecapComponent({ requestRender: () => {}, theme: stubTheme });
+		try {
+			component.setRecap({ mission: "goal", task: "work", next: "step" });
+			const lines = component.render(40);
+			expect(lines).toHaveLength(4);
+			expect(lines[0]).toContain("MISSION: goal");
+			expect(lines[1]).toContain("TASK: work");
+			expect(lines[2]).toContain("NEXT: step");
+			expect(lines[3]).toBe("─".repeat(40));
+		} finally {
+			component.dispose();
+		}
 	});
 });

@@ -361,7 +361,7 @@ export interface AgentState {
 export interface AgentToolResult<T> {
 	/** Text or image content returned to the model. */
 	content: (TextContent | ImageContent)[];
-	/** Arbitrary structured details for logs or UI rendering. */
+	/** Arbitrary structured details for logs or UI rendering. A non-empty `status: string` field is rendered live under the tool call while it runs; it clears when the final result arrives. */
 	details: T;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
 	usage?: Usage;

@@ -513,18 +513,3 @@ export async function runDoctorPass(cwd: string): Promise<DoctorPassReport> {
 
 	return { report: lines.join("\n"), ok: fails === 0 };
 }
-
-/**
- * Legacy entry point kept for the base-era interactive mode until it switches
- * to runDoctorPass; returns the report text in the old { table } shape.
- */
-export async function runDoctorProbeFromRunner(
-	cwd: string,
-	runner?: unknown,
-	ctx?: unknown,
-): Promise<{ results: ProbeResult[]; table: string }> {
-	void runner;
-	void ctx;
-	const { report } = await runDoctorPass(cwd);
-	return { results: [], table: report };
-}

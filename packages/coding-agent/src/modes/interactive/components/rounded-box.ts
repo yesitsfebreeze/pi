@@ -2,7 +2,7 @@ import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 
 export type BorderStyle = "light" | "heavy";
 
-interface BorderGlyphs {
+export interface BorderGlyphs {
 	topLeft: string;
 	top: string;
 	topRight: string;
@@ -61,6 +61,13 @@ export interface RenderRoundedBoxOptions {
 	glyphs?: BorderGlyphs;
 	/** Applied to border glyphs only; content lines keep their own styling. */
 	colorFn?: (text: string) => string;
+	/**
+	 * Applied to every box row (border + interior), filling the whole
+	 * rectangle behind the box. Use to give a box a background. The bg is
+	 * opened at the start of each row and reset at the end, so every emitted
+	 * line ends with the bg reset sequence. Default: no background.
+	 */
+	bgFn?: (text: string) => string;
 	/** Inner left padding in cells (default 0). */
 	leftPad?: number;
 	/** Inner right padding in cells (default 0). */
@@ -81,15 +88,14 @@ export interface RenderRoundedBoxOptions {
  * the available width.
  */
 export function renderRoundedBox(opts: RenderRoundedBoxOptions): string[] {
-	const { lines, width, colorFn = (s) => s, leftPad = 0, rightPad = 0, sizeToContent = true } = opts;
+	const { lines, width, colorFn = (s) => s, bgFn, leftPad = 0, rightPad = 0, sizeToContent = true } = opts;
 	if (lines.length === 0 || width < 3) return [];
 
 	const g = opts.glyphs ?? pickGlyphs("light");
 	const avail = width - 2; // space between the two side borders
 
-	// Children (e.g. Text) right-pad their lines to the render width. Strip that
-	// padding so the box sizes to the actual content, then re-pad to the box.
-	const stripped = lines.map((l) => l.replace(/[ \t]+$/, ""));
+	// Strip all leading/trailing whitespace so the box owns padding uniformly.
+	const stripped = lines.map((l) => l.trim());
 
 	let maxVis = 0;
 	for (const line of stripped) maxVis = Math.max(maxVis, visibleWidth(line));
@@ -99,14 +105,19 @@ export function renderRoundedBox(opts: RenderRoundedBoxOptions): string[] {
 	const padStr = " ".repeat(leftPad);
 	const rightPadStr = " ".repeat(rightPad);
 
+	// Wrap a fully-colored row in the background fill, if any. The bg wraps the
+	// entire row (border + interior) so the whole rectangle is filled and every
+	// emitted line ends with the bg reset.
+	const fill = bgFn ? (s: string) => bgFn(s) : (s: string) => s;
+
 	const result: string[] = [];
-	result.push(colorFn(g.topLeft + g.top.repeat(innerWidth) + g.topRight));
+	result.push(fill(colorFn(g.topLeft + g.top.repeat(innerWidth) + g.topRight)));
 	for (const line of stripped) {
 		const vis = visibleWidth(line);
-		const fill = Math.max(0, innerWidth - leftPad - rightPad - vis);
-		result.push(colorFn(g.left) + padStr + line + " ".repeat(fill) + rightPadStr + colorFn(g.right));
+		const blank = Math.max(0, innerWidth - leftPad - rightPad - vis);
+		result.push(fill(colorFn(g.left) + padStr + line + " ".repeat(blank) + rightPadStr + colorFn(g.right)));
 	}
-	result.push(colorFn(g.bottomLeft + g.bottom.repeat(innerWidth) + g.bottomRight));
+	result.push(fill(colorFn(g.bottomLeft + g.bottom.repeat(innerWidth) + g.bottomRight)));
 	return result;
 }
 
@@ -118,10 +129,19 @@ export function renderRoundedBox(opts: RenderRoundedBoxOptions): string[] {
 export class RoundedBox implements Component {
 	children: Component[] = [];
 	private colorFn: (text: string) => string;
+	private bgFn: ((text: string) => string) | undefined;
 	private glyphs: BorderGlyphs;
+	/** Inner gutter (cells) between the side borders and content. */
+	protected leftPad = 0;
+	protected rightPad = 0;
 
-	constructor(borderStyle: BorderStyle = "light", colorFn: (text: string) => string = (s) => s) {
+	constructor(
+		borderStyle: BorderStyle = "light",
+		colorFn: (text: string) => string = (s) => s,
+		bgFn?: (text: string) => string,
+	) {
 		this.colorFn = colorFn;
+		this.bgFn = bgFn;
 		this.glyphs = pickGlyphs(borderStyle);
 	}
 
@@ -157,6 +177,9 @@ export class RoundedBox implements Component {
 			width,
 			glyphs: this.glyphs,
 			colorFn: this.colorFn,
+			bgFn: this.bgFn,
+			leftPad: this.leftPad,
+			rightPad: this.rightPad,
 			sizeToContent: true,
 		});
 	}

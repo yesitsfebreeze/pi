@@ -14,6 +14,7 @@ export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
 	private contentText: Text;
 	private selfRenderContainer: Container;
+	private statusText: Text;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
@@ -74,6 +75,11 @@ export class ToolExecutionComponent extends Container {
 		} else {
 			this.addChild(this.contentText);
 		}
+
+		// Live status line — rendered under the tool call while it runs, updated via
+		// onUpdate({ content: [], details: { status: "…" } }).
+		this.statusText = new Text("", 1, 0);
+		this.addChild(this.statusText);
 
 		this.updateDisplay();
 	}
@@ -171,8 +177,21 @@ export class ToolExecutionComponent extends Container {
 	): void {
 		this.result = result;
 		this.isPartial = isPartial;
+		// While running, reflect details.status as the live status line; clear on completion.
+		if (isPartial) {
+			const status = result?.details?.status;
+			if (typeof status === "string" && status.trim() !== "") {
+				this.setStatus(status.trim());
+			}
+		} else {
+			this.setStatus(undefined);
+		}
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
+	}
+
+	private setStatus(status?: string): void {
+		this.statusText.setText(status ? theme.fg("dim", `↳ ${status}`) : "");
 	}
 
 	private maybeConvertImagesForKitty(): void {

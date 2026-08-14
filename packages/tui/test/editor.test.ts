@@ -700,31 +700,6 @@ describe("Editor component", () => {
 		});
 	});
 
-	describe("Scroll indicators", () => {
-		it("keeps truncated scroll indicators within width and preserves their color (issue #6962)", () => {
-			const width = 10;
-			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
-			const editor = new Editor(createTestTUI(width), { ...defaultEditorTheme, borderColor });
-			editor.setText(Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n"));
-
-			// Render once to initialize wrapping, then move the cursor so content remains above and below the viewport.
-			editor.render(width);
-			for (let index = 0; index < 10; index++) editor.handleInput("\x1b[A");
-
-			const lines = editor.render(width);
-			const topBorder = lines[0]!;
-			const bottomBorder = lines.at(-1)!;
-
-			assert.match(stripVTControlCharacters(topBorder), /^─── ↑/);
-			assert.match(stripVTControlCharacters(bottomBorder), /^─── ↓/);
-			assert.strictEqual(topBorder, borderColor(stripVTControlCharacters(topBorder)));
-			assert.strictEqual(bottomBorder, borderColor(stripVTControlCharacters(bottomBorder)));
-			for (const line of lines) {
-				assert.strictEqual(visibleWidth(line), width, `line exceeds width ${width}: ${JSON.stringify(line)}`);
-			}
-		});
-	});
-
 	describe("Grapheme-aware text wrapping", () => {
 		it("wraps lines correctly when text contains wide emojis", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
@@ -734,10 +709,10 @@ describe("Editor component", () => {
 			editor.setText("Hello ✅ World");
 			const lines = editor.render(width);
 
-			// All content lines (between borders) should fit within width
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				assert.strictEqual(lineWidth, width, `Line ${i} has width ${lineWidth}, expected ${width}`);
+			// All content lines should fit within width
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
+				assert.strictEqual(lineWidth, width, `Line has width ${lineWidth}, expected ${width}`);
 			}
 		});
 
@@ -750,11 +725,11 @@ describe("Editor component", () => {
 			editor.setText("✅✅✅✅✅✅");
 			const lines = editor.render(width);
 
-			// Should have 2 content lines (plus 2 border lines)
+			// Should have 2 content lines
 			// First line: 5 emojis (10 cols), second line: 1 emoji (2 cols) + padding
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				assert.strictEqual(lineWidth, width, `Line ${i} has width ${lineWidth}, expected ${width}`);
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
+				assert.strictEqual(lineWidth, width, `Line has width ${lineWidth}, expected ${width}`);
 			}
 		});
 
@@ -778,13 +753,13 @@ describe("Editor component", () => {
 			editor.setText("日本語テスト");
 			const lines = editor.render(width);
 
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				assert.strictEqual(lineWidth, width, `Line ${i} has width ${lineWidth}, expected ${width}`);
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
+				assert.strictEqual(lineWidth, width, `Line has width ${lineWidth}, expected ${width}`);
 			}
 
 			// Verify content split correctly
-			const contentLines = lines.slice(1, -1).map((l) => stripVTControlCharacters(l).trim());
+			const contentLines = lines.map((l) => stripVTControlCharacters(l).trim());
 			assert.strictEqual(contentLines.length, 2);
 			assert.strictEqual(contentLines[0], "日本語テス"); // 5 chars = 10 columns
 			assert.strictEqual(contentLines[1], "ト"); // 1 char = 2 columns (+ padding)
@@ -799,7 +774,7 @@ describe("Editor component", () => {
 			const lines = editor.render(width);
 
 			// Should fit in one content line
-			const contentLines = lines.slice(1, -1);
+			const contentLines = lines;
 			assert.strictEqual(contentLines.length, 1);
 
 			const lineWidth = visibleWidth(contentLines[0]!);
@@ -815,7 +790,7 @@ describe("Editor component", () => {
 			const lines = editor.render(width);
 
 			// The cursor (reverse video space) should be visible
-			const contentLine = lines[1]!;
+			const contentLine = lines[0]!;
 			assert.ok(contentLine.includes("\x1b[7m"), "Should have reverse video cursor");
 
 			// Line should still be correct width
@@ -831,9 +806,9 @@ describe("Editor component", () => {
 			editor.setText("0123456789✅");
 			const lines = editor.render(width);
 
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				assert.ok(lineWidth <= width, `Line ${i} has width ${lineWidth}, exceeds max ${width}`);
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
+				assert.ok(lineWidth <= width, `Line has width ${lineWidth}, exceeds max ${width}`);
 			}
 		});
 
@@ -845,14 +820,14 @@ describe("Editor component", () => {
 				// Type 9 chars → fills layoutWidth exactly, cursor at end on same line
 				for (const ch of "aaaaaaaaa") editor.handleInput(ch);
 				let lines = editor.render(width + paddingX);
-				let contentLines = lines.slice(1, -1);
+				let contentLines = lines;
 				assert.strictEqual(contentLines.length, 1, "Should be 1 content line before wrap");
-				assert.ok(contentLines[0]!.endsWith("\x1b[7m \x1b[0m"), "Cursor should be at end of line");
+				assert.ok(contentLines[0]!.endsWith("\x1b[7m \x1b[27m"), "Cursor should be at end of line");
 
 				// Type 1 more → text wraps to second line
 				editor.handleInput("a");
 				lines = editor.render(width + paddingX);
-				contentLines = lines.slice(1, -1);
+				contentLines = lines;
 				assert.strictEqual(contentLines.length, 2, "Should wrap to 2 content lines");
 			}
 		});
@@ -866,8 +841,8 @@ describe("Editor component", () => {
 			editor.setText("Hello world this is a test of word wrapping functionality");
 			const lines = editor.render(width);
 
-			// Get content lines (between borders)
-			const contentLines = lines.slice(1, -1).map((l) => stripVTControlCharacters(l).trim());
+			// Get content lines
+			const contentLines = lines.map((l) => stripVTControlCharacters(l).trim());
 
 			// Should NOT break mid-word
 			// Line 1 should end with a complete word
@@ -888,8 +863,8 @@ describe("Editor component", () => {
 			editor.setText("Word1 Word2 Word3 Word4 Word5 Word6");
 			const lines = editor.render(width);
 
-			// Get content lines (between borders)
-			const contentLines = lines.slice(1, -1);
+			// Get content lines
+			const contentLines = lines;
 
 			// No line should start with whitespace (except for padding at the end)
 			for (let i = 0; i < contentLines.length; i++) {
@@ -910,9 +885,9 @@ describe("Editor component", () => {
 			const lines = editor.render(width);
 
 			// All lines should fit within width
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				assert.strictEqual(lineWidth, width, `Line ${i} has width ${lineWidth}, expected ${width}`);
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
+				assert.strictEqual(lineWidth, width, `Line has width ${lineWidth}, expected ${width}`);
 			}
 		});
 
@@ -923,7 +898,7 @@ describe("Editor component", () => {
 			editor.setText("Word1   Word2    Word3");
 			const lines = editor.render(width);
 
-			const contentLine = stripVTControlCharacters(lines[1]!).trim();
+			const contentLine = stripVTControlCharacters(lines[0]!).trim();
 			// Multiple spaces should be preserved
 			assert.ok(contentLine.includes("Word1   Word2"), "Multiple spaces should be preserved");
 		});
@@ -935,8 +910,8 @@ describe("Editor component", () => {
 			editor.setText("");
 			const lines = editor.render(width);
 
-			// Should have border + empty content + border
-			assert.strictEqual(lines.length, 3);
+			// No borders: a single empty content line
+			assert.strictEqual(lines.length, 1);
 		});
 
 		it("handles single word that fits exactly", () => {
@@ -946,9 +921,9 @@ describe("Editor component", () => {
 			editor.setText("1234567890");
 			const lines = editor.render(width);
 
-			// Should have exactly 3 lines (top border, content, bottom border)
-			assert.strictEqual(lines.length, 3);
-			const contentLine = stripVTControlCharacters(lines[1]!);
+			// No borders: exactly one content line
+			assert.strictEqual(lines.length, 1);
+			const contentLine = stripVTControlCharacters(lines[0]!);
 			assert.ok(contentLine.includes("1234567890"), "Content should contain the word");
 		});
 
@@ -4148,5 +4123,73 @@ describe("Editor component", () => {
 
 			assert.strictEqual(submitted, pastedText);
 		});
+	});
+
+	describe("Placeholder", () => {
+		it("renders the placeholder after the cursor when empty", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.placeholder = "Type a prompt…";
+
+			const rendered = editor.render(80).map((line) => stripVTControlCharacters(line));
+
+			// Cursor block (1 col) followed by the dimmed placeholder, padded to width.
+			assert.strictEqual(rendered[0], " Type a prompt…".padEnd(80));
+		});
+
+		it("hides the placeholder once text is entered", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.placeholder = "Type a prompt…";
+			editor.handleInput("h");
+
+			const rendered = editor.render(80).map((line) => stripVTControlCharacters(line));
+
+			assert.ok(!rendered[0]?.includes("Type a prompt…"));
+		});
+
+		it("renders no placeholder when unset", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			const rendered = editor.render(80).map((line) => stripVTControlCharacters(line));
+
+			// Cursor block only, padded to width.
+			assert.strictEqual(rendered[0], " ".repeat(80));
+		});
+	});
+});
+
+describe("Editor selection deletion bookkeeping", () => {
+	// Deleting a selection used to mutate the buffer directly, skipping the
+	// undo snapshot and the onChange notification that every other delete path
+	// performs. Selection had no test coverage at all, so nothing caught it.
+	function selectAll(editor: Editor): void {
+		// Cursor sits at end of text after setText; select leftwards to the start.
+		for (let i = 0; i < 40; i++) editor.handleInput("\x1b[d"); // shift+left
+	}
+
+	it("fires onChange when a selection is deleted", () => {
+		const editor = new Editor(createTestTUI(), defaultEditorTheme);
+		const seen: string[] = [];
+		editor.onChange = (text) => seen.push(text);
+		editor.setText("hello world");
+		seen.length = 0;
+
+		selectAll(editor);
+		editor.handleInput("\x7f"); // Backspace
+
+		assert.strictEqual(editor.getText(), "", "selection should be gone");
+		assert.ok(seen.length > 0, "onChange must fire so consumers do not go stale");
+		assert.strictEqual(seen[seen.length - 1], "");
+	});
+
+	it("makes deleting a selection undoable", () => {
+		const editor = new Editor(createTestTUI(), defaultEditorTheme);
+		editor.setText("hello world");
+
+		selectAll(editor);
+		editor.handleInput("\x7f"); // Backspace
+		assert.strictEqual(editor.getText(), "");
+
+		editor.handleInput("\x1f"); // ctrl+- (tui.editor.undo)
+		assert.strictEqual(editor.getText(), "hello world", "undo must restore the deleted selection");
 	});
 });

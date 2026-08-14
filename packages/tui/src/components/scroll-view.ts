@@ -27,7 +27,7 @@ export class ScrollView extends Container {
 	private currentScrollbar: ScrollViewScrollbar;
 	private readonly scrollbarHideDelayMs: number;
 	private currentScrollTop = 0;
-	private contentHeight = 0;
+	private _contentHeight = 0;
 	private currentViewportHeight = 0;
 	private followingEnd: boolean;
 	private followSuppressedAtEnd = false;
@@ -35,6 +35,11 @@ export class ScrollView extends Container {
 	private transientScrollbarVisible = false;
 	private scrollbarActive = false;
 	private scrollbarHideTimer: NodeJS.Timeout | undefined;
+	/** Cached child render output to avoid re-rendering on scroll-only frames. */
+	private cachedContentLines?: string[];
+	private cachedContentWidth?: number;
+	private cachedContentHeight?: number;
+	private contentInvalidated = true;
 
 	constructor(component: Component, options: ScrollViewOptions = {}) {
 		super();
@@ -64,6 +69,11 @@ export class ScrollView extends Container {
 		return this.currentViewportHeight;
 	}
 
+	/** Last-known content height, set by updateLayout. Used for cache validation. */
+	get contentHeight(): number {
+		return this._contentHeight;
+	}
+
 	get scrollbar(): ScrollViewScrollbar {
 		return this.currentScrollbar;
 	}
@@ -71,7 +81,7 @@ export class ScrollView extends Container {
 	get isScrollbarVisible(): boolean {
 		if (this.scrollbar === "always") return this.currentViewportHeight > 0;
 		return (
-			this.scrollbar === "auto" && this.contentHeight > this.currentViewportHeight && this.transientScrollbarVisible
+			this.scrollbar === "auto" && this._contentHeight > this.currentViewportHeight && this.transientScrollbarVisible
 		);
 	}
 
@@ -87,8 +97,32 @@ export class ScrollView extends Container {
 		return this.scrollbar === "always" && width > 1 ? width - 1 : width;
 	}
 
+	/**
+	 * Return cached child render lines if width matches, content height hasn't
+	 * changed, and content hasn't been explicitly invalidated.
+	 */
+	getCachedContent(width: number, currentHeight: number): string[] | undefined {
+		if (this.contentInvalidated || this.cachedContentWidth !== width || this.cachedContentHeight !== currentHeight) {
+			return undefined;
+		}
+		return this.cachedContentLines;
+	}
+
+	/** Store child render lines for reuse across scroll-only frames. */
+	setCachedContent(width: number, lines: string[], height: number): void {
+		this.cachedContentWidth = width;
+		this.cachedContentHeight = height;
+		this.cachedContentLines = lines;
+		this.contentInvalidated = false;
+	}
+
+	/** Invalidate the content cache so the next render re-renders the child. */
+	invalidateContent(): void {
+		this.contentInvalidated = true;
+	}
+
 	private markScrollbarActivity(): void {
-		if (this.scrollbar !== "auto" || this.contentHeight <= this.currentViewportHeight) return;
+		if (this.scrollbar !== "auto" || this._contentHeight <= this.currentViewportHeight) return;
 		this.transientScrollbarVisible = true;
 		if (this.scrollbarHideTimer) {
 			clearTimeout(this.scrollbarHideTimer);
@@ -118,7 +152,7 @@ export class ScrollView extends Container {
 
 	scrollTo(scrollTop: number, options: ScrollViewScrollToOptions = {}): void {
 		const requested = Number.isFinite(scrollTop) ? Math.trunc(scrollTop) : this.currentScrollTop;
-		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
+		const maxScrollTop = Math.max(0, this._contentHeight - this.currentViewportHeight);
 		const next = Math.max(0, Math.min(maxScrollTop, requested));
 		const nextFollowSuppressedAtEnd = options.disableFollow === true && next === maxScrollTop;
 		const nextFollowingEnd = !nextFollowSuppressedAtEnd && this.followEnd && next === maxScrollTop;
@@ -140,7 +174,7 @@ export class ScrollView extends Container {
 	scrollBy(lines: number): number {
 		const requested = Number.isFinite(lines) ? Math.trunc(lines) : 0;
 		if (requested === 0) return 0;
-		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
+		const maxScrollTop = Math.max(0, this._contentHeight - this.currentViewportHeight);
 		const start = this.followingEnd ? maxScrollTop : this.currentScrollTop;
 		const next = Math.max(0, Math.min(maxScrollTop, start + requested));
 		const moved = next - start;
@@ -156,9 +190,9 @@ export class ScrollView extends Container {
 	scrollToStart(): void {
 		const changed =
 			this.currentScrollTop !== 0 ||
-			this.followingEnd !== (this.followEnd && this.contentHeight <= this.currentViewportHeight);
+			this.followingEnd !== (this.followEnd && this._contentHeight <= this.currentViewportHeight);
 		this.currentScrollTop = 0;
-		this.followingEnd = this.followEnd && this.contentHeight <= this.currentViewportHeight;
+		this.followingEnd = this.followEnd && this._contentHeight <= this.currentViewportHeight;
 		this.followSuppressedAtEnd = false;
 		if (changed) {
 			this.markScrollbarActivity();
@@ -167,7 +201,7 @@ export class ScrollView extends Container {
 	}
 
 	scrollToEnd(): void {
-		const next = Math.max(0, this.contentHeight - this.currentViewportHeight);
+		const next = Math.max(0, this._contentHeight - this.currentViewportHeight);
 		const changed = this.currentScrollTop !== next || this.followingEnd !== this.followEnd;
 		this.currentScrollTop = next;
 		this.followingEnd = this.followEnd;
@@ -179,17 +213,17 @@ export class ScrollView extends Container {
 	}
 
 	updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
-		this.contentHeight = Math.max(0, Math.floor(contentHeight));
+		this._contentHeight = Math.max(0, Math.floor(contentHeight));
 		this.currentViewportHeight = Math.max(0, Math.floor(viewportHeight));
 		this.requestRenderCallback = requestRender;
-		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
+		const maxScrollTop = Math.max(0, this._contentHeight - this.currentViewportHeight);
 		if (this.followingEnd) this.currentScrollTop = maxScrollTop;
 		else this.currentScrollTop = Math.max(0, Math.min(this.currentScrollTop, maxScrollTop));
 		if (this.currentScrollTop < maxScrollTop) this.followSuppressedAtEnd = false;
 		if (this.followEnd && this.currentScrollTop === maxScrollTop && !this.followSuppressedAtEnd) {
 			this.followingEnd = true;
 		}
-		if (this.contentHeight <= this.currentViewportHeight) this.hideTransientScrollbar();
+		if (this._contentHeight <= this.currentViewportHeight) this.hideTransientScrollbar();
 	}
 
 	override addChild(_component: Component): void {

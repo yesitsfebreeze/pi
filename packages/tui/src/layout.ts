@@ -49,6 +49,7 @@ interface LayoutContext {
 	renderCache: Map<Component, Map<number, string[]>>;
 	requestRender: () => void;
 	primaryScrollView: ScrollView | undefined;
+	useScrollContentCache: boolean;
 }
 
 function intersect(a: LayoutRect, b: LayoutRect): LayoutRect {
@@ -109,17 +110,21 @@ function layoutComponent(
 	const safeWidth = Math.max(1, Math.floor(width));
 	const node = getLayoutNode(component);
 	if (!node) {
-		const lines = renderCached(context, component, safeWidth);
-		const allocatedHeight = height === undefined ? lines.length : Math.max(0, Math.floor(height));
+		const allocatedHeight = height === undefined ? undefined : Math.max(0, Math.floor(height));
+		const lines =
+			allocatedHeight !== undefined && typeof component.renderSized === "function"
+				? component.renderSized(safeWidth, allocatedHeight)
+				: renderCached(context, component, safeWidth);
+		const finalHeight = allocatedHeight ?? lines.length;
 		let lineOffset = 0;
-		if (lines.length > allocatedHeight && allocatedHeight > 0) {
+		if (lines.length > finalHeight && finalHeight > 0) {
 			const cursorLine = lines.findIndex((line) => line.includes(CURSOR_MARKER));
-			if (cursorLine >= allocatedHeight) lineOffset = cursorLine - allocatedHeight + 1;
+			if (cursorLine >= finalHeight) lineOffset = cursorLine - finalHeight + 1;
 		}
 		return {
 			component,
-			rect: { x, y, width: safeWidth, height: allocatedHeight },
-			clip: intersect(clip, { x, y, width: safeWidth, height: allocatedHeight }),
+			rect: { x, y, width: safeWidth, height: finalHeight },
+			clip: intersect(clip, { x, y, width: safeWidth, height: finalHeight }),
 			children: [],
 			lines,
 			lineOffset,
@@ -130,20 +135,35 @@ function layoutComponent(
 	if (node.type === "scroll") {
 		const previousScrollTop = node.state.scrollTop;
 		const contentWidth = node.state.getContentWidth(safeWidth);
-		const childBox = layoutComponent(
-			context,
-			node.component,
-			x,
-			y - previousScrollTop,
-			contentWidth,
-			undefined,
-			clip,
-		);
+		const scrollView = node.state as ScrollView;
+
+		// When the caller signals a scroll-only frame, reuse cached child content
+		// to avoid re-rendering the full transcript. Standalone renderLayoutFrame
+		// calls (tests, non-TuiAltScreen consumers) skip the cache entirely.
+		let childBox: LayoutBox;
+		const cachedLines = context.useScrollContentCache
+			? scrollView.getCachedContent(contentWidth, scrollView.contentHeight)
+			: undefined;
+		if (cachedLines !== undefined) {
+			childBox = {
+				component: node.component,
+				rect: { x, y: y - previousScrollTop, width: contentWidth, height: cachedLines.length },
+				clip: { x, y: y - previousScrollTop, width: contentWidth, height: cachedLines.length },
+				children: [],
+				lines: cachedLines,
+				layer: 0,
+			};
+		} else {
+			childBox = layoutComponent(context, node.component, x, y - previousScrollTop, contentWidth, undefined, clip);
+			if (context.useScrollContentCache && childBox.lines) {
+				scrollView.setCachedContent(contentWidth, childBox.lines as string[], childBox.rect.height);
+			}
+		}
+
 		const contentHeight = childBox.rect.height;
 		const viewportHeight = height === undefined ? contentHeight : Math.max(0, Math.floor(height));
 		node.state.updateLayout(contentHeight, viewportHeight, context.requestRender);
 		translateBox(childBox, previousScrollTop - node.state.scrollTop);
-		const scrollView = node.state as ScrollView;
 		if (node.state.primary || !context.primaryScrollView) context.primaryScrollView = scrollView;
 		const rect = { x, y, width: safeWidth, height: viewportHeight };
 		const childClip = intersect(clip, rect);
@@ -153,7 +173,7 @@ function layoutComponent(
 			clip: childClip,
 			children: [childBox],
 			scrollView,
-			scrollContentLines: renderCached(context, node.component, contentWidth),
+			scrollContentLines: cachedLines ?? childBox.lines ?? renderCached(context, node.component, contentWidth),
 			layer: 0,
 		};
 		childBox.parent = box;
@@ -355,6 +375,7 @@ export function renderLayoutFrame(
 	width: number,
 	height: number,
 	requestRender: () => void,
+	opts?: { useScrollContentCache?: boolean },
 ): LayoutFrame {
 	const safeWidth = Math.max(1, Math.floor(width));
 	const safeHeight = Math.max(1, Math.floor(height));
@@ -363,6 +384,7 @@ export function renderLayoutFrame(
 		renderCache: new Map(),
 		requestRender,
 		primaryScrollView: undefined,
+		useScrollContentCache: opts?.useScrollContentCache ?? false,
 	};
 	const rootBox = layoutComponent(context, root, 0, 0, safeWidth, safeHeight, {
 		x: 0,

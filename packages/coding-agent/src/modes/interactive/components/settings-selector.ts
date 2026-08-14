@@ -82,6 +82,7 @@ export interface SettingsConfig {
 	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
 	fullscreenScrollbar: ScrollViewScrollbar;
+	wheelScrollTrail: number;
 	warnings: WarningSettings;
 }
 
@@ -115,6 +116,7 @@ export interface SettingsCallbacks {
 	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
+	onWheelScrollTrailChange: (trail: number) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
 }
@@ -630,6 +632,13 @@ export class SettingsSelectorComponent extends Container {
 				values: ["auto", "always", "hidden"],
 			},
 			{
+				id: "wheel-scroll-trail",
+				label: "Wheel scroll trail",
+				description: "Max accelerated lines per wheel event while scrolling continuously",
+				currentValue: String(config.wheelScrollTrail),
+				values: ["1", "2", "3", "4", "5", "8", "10"],
+			},
+			{
 				id: "theme",
 				label: "Theme",
 				description: "Color theme for the interface",
@@ -843,6 +852,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "fullscreen-scrollbar":
 						callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
+						break;
+					case "wheel-scroll-trail":
+						callbacks.onWheelScrollTrailChange(parseInt(newValue, 10));
 						break;
 					case "theme":
 						callbacks.onThemeChange(newValue);

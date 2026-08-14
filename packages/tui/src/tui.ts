@@ -29,6 +29,22 @@ export interface Component {
 	render(width: number): string[];
 
 	/**
+	 * Optional: render to an exact (width, height) viewport. When present and
+	 * the layout engine knows the allocated height (a stack child with a fixed
+	 * basis/grow, for example), this is called instead of {@link render} so the
+	 * component can fill its region exactly. Return exactly `height` lines.
+	 */
+	renderSized?(width: number, height: number): string[];
+
+	/**
+	 * If true, the focused component receives every key sequence, including the
+	 * ones the alternate-screen viewport would otherwise intercept for scrolling
+	 * (PageUp/PageDown/Home/End, search, prompt jumps, mouse). Used by embedded
+	 * terminal editors so their keystrokes are never swallowed.
+	 */
+	capturesAllInput?: boolean;
+
+	/**
 	 * Optional handler for keyboard input when component has focus
 	 */
 	handleInput?(data: string): void;

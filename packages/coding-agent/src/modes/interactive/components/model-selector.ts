@@ -9,6 +9,7 @@ import {
 	Text,
 	type TUI,
 } from "@earendil-works/pi-tui";
+import { classifyAll, type LedgerTier, readLedger } from "../../../core/model-ledger.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
@@ -20,6 +21,14 @@ interface ModelItem {
 	provider: string;
 	id: string;
 	model: Model<any>;
+	tier?: LedgerTier;
+}
+
+const TIER_ORDER: Record<LedgerTier, number> = { frontier: 0, balanced: 1, fast: 2, embedder: 3 };
+
+function tierBadge(tier: LedgerTier | undefined): string {
+	if (!tier || tier === "balanced") return "";
+	return theme.fg("muted", `[${tier}]`);
 }
 
 interface ScopedModelItem {
@@ -137,10 +146,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private loadModelsFromSnapshot(): void {
-		const models = this.modelRuntime.getAvailableSnapshot().map((model: Model<any>) => ({
+		const snapshot = this.modelRuntime.getAvailableSnapshot();
+		const ledger = readLedger();
+		const fallback = classifyAll(snapshot);
+		const tierOf = (model: Model<any>): LedgerTier | undefined =>
+			ledger?.entries[`${model.provider}/${model.id}`]?.tier ?? fallback[`${model.provider}/${model.id}`]?.tier;
+		const models = snapshot.map((model: Model<any>) => ({
 			provider: model.provider,
 			id: model.id,
 			model,
+			tier: tierOf(model),
 		}));
 		this.allModels = this.sortModels(models);
 		this.scopedModels = this.scopedModels.map((scoped) => {
@@ -208,12 +223,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, then by provider
+		// Sort: current model first, then by category tier, then provider.
 		sorted.sort((a, b) => {
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
+			const aTier = TIER_ORDER[a.tier ?? "balanced"] ?? 5;
+			const bTier = TIER_ORDER[b.tier ?? "balanced"] ?? 5;
+			if (aTier !== bTier) return aTier - bTier;
 			return a.provider.localeCompare(b.provider);
 		});
 		return sorted;
@@ -278,12 +296,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				const modelText = `${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${tierBadge(item.tier)}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
+				line = `${modelText} ${providerBadge}${tierBadge(item.tier)}${checkmark}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));

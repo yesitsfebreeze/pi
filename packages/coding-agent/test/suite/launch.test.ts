@@ -61,8 +61,13 @@ describe("LaunchManager", () => {
 		const mgr = new LaunchManager();
 		const r = mgr.start("echo hello-stdout");
 		const name = r.msg.split(" ")[1];
-		await sleep(150);
-		const logs = mgr.logs(name);
+		// Poll instead of a fixed sleep — a loaded machine can delay the echo.
+		let logs = mgr.logs(name);
+		const t0 = Date.now();
+		while (Date.now() - t0 < 3000 && !logs.msg.includes("hello-stdout")) {
+			await sleep(50);
+			logs = mgr.logs(name);
+		}
 		expect(logs.ok).toBe(true);
 		expect(logs.msg).toContain("hello-stdout");
 		mgr.shutdown();

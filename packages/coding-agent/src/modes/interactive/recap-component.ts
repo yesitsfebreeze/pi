@@ -98,8 +98,50 @@ export function parseRecapPartial(text: string): Partial<Recap> | null {
 	return fields;
 }
 
-/** Strip `<recap>…</recap>` blocks from text (used as a markdown transformer). */
+const OPEN_TAG = "<recap>";
+const CLOSE_TAG = "</recap>";
+
+/**
+ * Strip a trailing partial `<recap>` opening tag (token-split streaming).
+ * The recap is always the last thing in the message, so a trailing fragment of
+ * its opening tag ("<rec", "<recap", …) cannot be legitimate visible content.
+ * Only fragments of length >= 2 are stripped — a bare "<" at end of stream is
+ * far more likely to be ordinary mid-sentence content and is left alone.
+ */
+function stripTrailingPartialOpenTag(markdown: string): string {
+	for (let len = OPEN_TAG.length - 1; len >= 2; len--) {
+		if (markdown.endsWith(OPEN_TAG.slice(0, len))) {
+			return markdown.slice(0, -len);
+		}
+	}
+	return markdown;
+}
+
+/**
+ * Strip `<recap>…</recap>` blocks from text (used as a markdown transformer).
+ *
+ * Handles the streaming case: while the model is still emitting a recap block
+ * (opening `<recap>` present but no closing `</recap>` yet), truncate everything
+ * from `<recap>` onward. The recap is always the LAST thing in the message, so
+ * nothing after the opening tag is user-visible content. Without this, the
+ * partial `<recap>` tag and its half-written fields would flash through to the
+ * user on every render until the closing tag arrives.
+ */
 export function stripRecapBlock(markdown: string): string {
+	// Strip a trailing partial opening tag first, so a split stream token can't
+	// flash a fragment of the tag itself (e.g. "<rec") before the rest lands.
+	markdown = stripTrailingPartialOpenTag(markdown);
+
+	const openIdx = markdown.indexOf(OPEN_TAG);
+	if (openIdx === -1) return markdown.trim();
+
+	const closeIdx = markdown.indexOf(CLOSE_TAG, openIdx);
+	if (closeIdx === -1) {
+		// Streaming: block not yet closed — drop everything from <recap> on.
+		return markdown.substring(0, openIdx).trim();
+	}
+
+	// Closed block(s) present — strip them all, preserving text in between.
 	return markdown.replace(/<recap>[\s\S]*?<\/recap>\s*/g, "").trim();
 }
 
@@ -165,12 +207,15 @@ export class RecapComponent {
 	}
 
 	render(width: number): string[] {
+		// Nothing known yet → render nothing, not even the separator line.
+		const recap = this.recap;
+		if (!recap || (!recap.mission && !recap.task && !recap.next)) return [];
 		// Reserve 1 cell of left indent for readability.
 		const inner = Math.max(1, width - 1);
 		this.longLine = false;
 		const out: string[] = [];
 		for (const { key, color } of LABELS) {
-			const value = this.recap?.[key];
+			const value = recap[key];
 			const display = value ? `${key.toUpperCase()}: ${value}` : `${key.toUpperCase()}: …`;
 			const plain = stripAnsi(display);
 			if (visibleWidth(plain) > inner) {
@@ -181,6 +226,11 @@ export class RecapComponent {
 				out.push(` ${this.theme.fg(color, plain)}`);
 			}
 		}
+		// Separator below the MISSION/TASK/NEXT lines, mirroring the input
+		// separator at the bottom of the TUI. Rendered here (instead of as a
+		// sibling component) so it disappears with the recap lines when there
+		// is no recap yet.
+		out.push(this.theme.fg("border", "─".repeat(Math.max(0, width))));
 		// Reset the marquee when nothing needs to scroll, so a newly-long
 		// line starts from the beginning rather than mid-scroll.
 		if (!this.longLine) this.offset = 0;

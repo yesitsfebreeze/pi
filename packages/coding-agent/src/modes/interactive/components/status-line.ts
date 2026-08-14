@@ -86,19 +86,45 @@ function srgbLuminance(r: number, g: number, b: number): number {
 function contrastRatio(L1: number, L2: number): number {
 	return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
 }
-// SGR bg escape → best fg (black or white) by ANSI reference contrast
+// SGR bg escape → best fg (black or white) by ANSI reference contrast.
+// Memoized: the render loop runs at 12.5 Hz over a handful of compile-time
+// constant backgrounds, so the contrast math should run once per distinct bg,
+// not once per segment per frame.
+const FG_FOR_BG = new Map<string, string>();
 function bestFg(bgSgr: string): string {
+	const cached = FG_FOR_BG.get(bgSgr);
+	if (cached !== undefined) return cached;
 	const m = bgSgr.match(/\x1b\[4(\d)m/);
 	const idx = m ? +m[1] : 0;
 	const [r, g, b] = ANSI_REF[idx] ?? [0, 0, 0];
 	const bgL = srgbLuminance(r, g, b);
 	const blackR = contrastRatio(bgL, srgbLuminance(0, 0, 0));
 	const whiteR = contrastRatio(bgL, srgbLuminance(229, 229, 229));
-	return blackR >= whiteR ? FG_BLACK : FG_WHITE;
+	const fg = blackR >= whiteR ? FG_BLACK : FG_WHITE;
+	FG_FOR_BG.set(bgSgr, fg);
+	return fg;
 }
 
-function styled(bgAnsi: string, text: string, forceFg?: string): string {
-	return `${bgAnsi}${forceFg ?? bestFg(bgAnsi)} ${text} ${RESET}`;
+function styled(bgAnsi: string, text: string): string {
+	// The padded pill is the tight primitive with auto-picked fg + one space of padding.
+	return styledTight(bgAnsi, ` ${text} `, bestFg(bgAnsi));
+}
+
+function formatHHMM(ms: number): string {
+	const d = new Date(ms);
+	const hh = String(d.getHours()).padStart(2, "0");
+	const mm = String(d.getMinutes()).padStart(2, "0");
+	return `${hh}:${mm}`;
+}
+
+function formatUptime(seconds: number): string {
+	const s = Math.floor(seconds);
+	const h = Math.floor(s / 3600);
+	const m = Math.floor((s % 3600) / 60);
+	const sec = s % 60;
+	if (h > 0) return `${h}h${m}m`;
+	if (m > 0) return `${m}m${sec}s`;
+	return `${sec}s`;
 }
 function styledTight(bgAnsi: string, text: string, fg: string): string {
 	return `${bgAnsi}${fg}${text}${RESET}`;
@@ -124,6 +150,9 @@ export type StatusLineData = {
 	sessionCost: number;
 	autoCompact: boolean;
 	working: boolean;
+	/** Status slots published by extensions via ctx.ui.setStatus(), in registration order. */
+	extensionStatuses?: readonly string[];
+	now: number;
 };
 
 /**
@@ -133,7 +162,6 @@ export type StatusLineData = {
 export class StatusLineComponent implements Component {
 	private readonly getData: () => StatusLineData;
 	private spinnerFrame = 0;
-	private spinning = false;
 	private spinnerInterval: NodeJS.Timeout | null = null;
 	private readonly spinnerColor: string;
 	private readonly ui: TUI;
@@ -145,13 +173,11 @@ export class StatusLineComponent implements Component {
 	}
 
 	startSpinner(): void {
-		this.spinning = true;
 		this.spinnerFrame = 0;
 		this.restartInterval();
 	}
 
 	stopSpinner(): void {
-		this.spinning = false;
 		this.spinnerFrame = 0;
 		if (this.spinnerInterval) {
 			clearInterval(this.spinnerInterval);
@@ -208,11 +234,17 @@ export class StatusLineComponent implements Component {
 			if (g.behind > 0) parts.push(`\u2193${g.behind}`);
 			if (g.added > 0) parts.push(`+${g.added}`);
 			if (g.deleted > 0) parts.push(`-${g.deleted}`);
+			// Clock and uptime
+			parts.push(`${formatHHMM(d.now)} UP ${formatUptime(process.uptime())}`);
 			segments.push(styled(BG.git, parts.join(" ")));
 		}
 
-		// Right-side segments: context, tokens, cost
+		// Right-side segments: extension statuses, context, tokens, cost
 		const rightSegments: string[] = [];
+
+		for (const status of d.extensionStatuses ?? []) {
+			if (status) rightSegments.push(` ${status} `);
+		}
 
 		if (d.contextWindow > 0) {
 			const pct = d.contextPercent !== null ? `${d.contextPercent.toFixed(1)}%` : "?";

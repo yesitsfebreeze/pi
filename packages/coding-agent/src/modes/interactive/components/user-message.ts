@@ -9,7 +9,9 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
- * Component that renders a user message inside a heavy rounded border.
+ * Component that renders a user message inside a light rounded border drawn
+ * by the shared `RoundedBox` utility, with the theme's `userMessageBg` fill.
+ * No box glyphs are hand-rolled here — border + fill both come from the utility.
  */
 export class UserMessageComponent extends RoundedBox {
 	private text: string;
@@ -24,6 +26,8 @@ export class UserMessageComponent extends RoundedBox {
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 	) {
 		super("light", (s) => theme.fg("borderAccent", s));
+		this.leftPad = outputPad;
+		this.rightPad = outputPad;
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
@@ -32,6 +36,8 @@ export class UserMessageComponent extends RoundedBox {
 	}
 
 	setOutputPad(padding: number): void {
+		this.leftPad = padding;
+		this.rightPad = padding;
 		this.outputPad = padding;
 		this.rebuild();
 	}
