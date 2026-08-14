@@ -333,6 +333,7 @@ describe("InteractiveMode.setupAutocompleteProvider", () => {
 			defaultEditor,
 			editor: customEditor,
 			autocompleteProviderWrappers: [wrap1, wrap2],
+			settingsManager: { getInputMode: () => "enhanced" },
 		};
 
 		(InteractiveMode as any).prototype.setupAutocompleteProvider.call(fakeThis);
@@ -363,6 +364,7 @@ describe("InteractiveMode.setupAutocompleteProvider", () => {
 			defaultEditor,
 			editor: customEditor,
 			autocompleteProviderWrappers: [passThrough(["$"]), passThrough(["!"])],
+			settingsManager: { getInputMode: () => "enhanced" },
 		};
 
 		(

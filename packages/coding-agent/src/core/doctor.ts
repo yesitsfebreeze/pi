@@ -10,7 +10,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import type { ExtensionRunner } from "./extensions/runner.ts";
@@ -132,6 +132,33 @@ function probeMcpCache(): ProbeResult {
 	}
 }
 
+/**
+ * Find the workspace root for the package probe: walk up from `start` and
+ * return the first directory whose package.json declares `workspaces` (a
+ * monorepo root), else the highest ancestor that has a package.json at all.
+ * The old default `join(cwd, "..")` scanned the repo's *parent* when the
+ * session cwd was the repo root — probing unrelated sibling dirs.
+ */
+function findWorkspaceRoot(start: string): string | null {
+	let dir = resolve(start);
+	let lastWithPkg: string | null = null;
+	while (true) {
+		const pkgJson = join(dir, "package.json");
+		if (existsSync(pkgJson)) {
+			try {
+				const manifest = JSON.parse(readFileSync(pkgJson, "utf8"));
+				if (manifest.workspaces) return dir;
+			} catch {
+				/* malformed package.json — keep walking */
+			}
+			lastWithPkg = dir;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return lastWithPkg;
+		dir = parent;
+	}
+}
+
 // ── pi packages ─────────────────────────────────────────────────────
 // Walk a workspace for pi packages (a `pi` field in package.json) and run each
 // one's test suite. A package without tests reports SKIP; a failing suite
@@ -160,7 +187,15 @@ async function probePackages(workspace: string): Promise<ProbeResult[]> {
 			continue;
 		}
 		try {
-			await execFileP("npm", ["test"], { cwd: pkgDir, timeout: 30_000, encoding: "utf8" });
+			// maxBuffer: a suite printing more than the 1MB default kills the child
+			// with ERR_CHILD_PROCESS_STDIO_MAXBUFFER and reports FAIL — a healthy
+			// package would read as broken. 16MB matches runCommand's ceiling.
+			await execFileP("npm", ["test"], {
+				cwd: pkgDir,
+				timeout: 30_000,
+				encoding: "utf8",
+				maxBuffer: 16 * 1024 * 1024,
+			});
 			results.push({ check: `pkg:${pkg}`, status: "PASS", detail: "tests pass" });
 		} catch (e: any) {
 			const err = (e?.stderr || e?.message || "").slice(0, 80);
@@ -288,7 +323,7 @@ export async function runDoctorProbe(
 	);
 	raw.push(...extensionResults);
 
-	const workspace = resolved.workspace ?? join(resolved.cwd, "..");
+	const workspace = resolved.workspace ?? findWorkspaceRoot(resolved.cwd) ?? "";
 	raw.push(...(await probePackages(workspace)));
 
 	const results = sortResults(raw);
@@ -513,3 +548,4 @@ export async function runDoctorPass(cwd: string): Promise<DoctorPassReport> {
 
 	return { report: lines.join("\n"), ok: fails === 0 };
 }
+

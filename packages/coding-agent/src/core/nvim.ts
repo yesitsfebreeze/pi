@@ -20,6 +20,7 @@ import type { ToolDefinition } from "./extensions/types.ts";
 import {
 	diffConfigFiles,
 	listNotes,
+	notePath,
 	readNote,
 	recordSeen,
 	setNvimLearningRoot,
@@ -531,7 +532,12 @@ export function createNvimLearnTool(root: string, exec: NvimExec): ToolDefinitio
 						};
 					writeNote(name, content);
 					return {
-						content: [{ type: "text" as const, text: `Saved note '${name}'.` }],
+						content: [
+							{
+								type: "text" as const,
+								text: `Saved note '${name}' at ${notePath(name)}.`,
+							},
+						],
 						details: undefined,
 					};
 				}
