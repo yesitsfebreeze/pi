@@ -46,3 +46,11 @@ collect.sh
 .pi/nvim/
 .pi/rigor/
 .pi/
+# Local tool state / session scratch (never repo content)
+.kern/
+.obsidian/
+vicky/
+integrated.md
+integration-summary.md
+prompt.md
+state.md
