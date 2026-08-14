@@ -305,8 +305,10 @@ describe("gantt prd idle", () => {
 
 function makeApi() {
 	const tools: Record<string, { execute: (...args: any[]) => any }> = {};
+	const commands: Record<string, { description: string; handler: (...args: any[]) => any }> = {};
 	const handlers: Record<string, Array<(...args: any[]) => any>> = {};
 	const sent: { text: string; opts?: { deliverAs?: string } }[] = [];
+	const notices: { text: string; level?: string }[] = [];
 	const status: Record<string, string | undefined> = {};
 	const api: any = {
 		on(event: string, h: (...args: any[]) => any) {
@@ -316,7 +318,9 @@ function makeApi() {
 		registerTool(t: any) {
 			tools[t.name] = t;
 		},
-		registerCommand() {},
+		registerCommand(name: string, def: any) {
+			commands[name] = def;
+		},
 		sendUserMessage(text: string, opts?: { deliverAs?: string }) {
 			sent.push({ text, opts });
 		},
@@ -327,14 +331,16 @@ function makeApi() {
 			setStatus: (k: string, t: string | undefined) => {
 				status[k] = t;
 			},
-			notify: () => {},
+			notify: (text: string, level?: string) => {
+				notices.push({ text, level });
+			},
 		},
 		sessionManager: { getSessionId: () => "test-session" },
 	});
 	async function fire(event: string, ev: any, c: any) {
 		for (const h of handlers[event] ?? []) await h(ev, c);
 	}
-	return { api, tools, fire, sent, status, ctx };
+	return { api, tools, commands, fire, sent, notices, status, ctx };
 }
 
 describe("gantt inline extension", () => {
@@ -454,5 +460,153 @@ describe("gantt inline extension", () => {
 		await h.fire("agent_settled", { type: "agent_settled" }, h.ctx(repo));
 		expect(sent.some((s) => s.startsWith("plan: closed b1"))).toBe(true);
 		delete (globalThis as any).__crew;
+	});
+});
+
+// ── conductor (continuous /gantt loop) ───────────────────────────────────────
+
+describe("gantt conductor (continuous /gantt loop)", () => {
+	it("bare /gantt arms the conductor and sends the bootstrap", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("", h.ctx(repo));
+		const boot = h.sent.find((m) => m.text.includes("gantt CONDUCTOR"));
+		expect(boot).toBeDefined();
+		expect(boot?.opts?.deliverAs).toBe("followUp");
+		expect(boot?.text).toContain("[GANTT: DONE]");
+		expect(boot?.text).toContain('action "dispatch-all"');
+		// conductor state visible in the status line
+		expect(h.status.gantt).toContain("conductor");
+	});
+
+	it("conductor joins both plan and work walkie-talkie scopes; stop leaves them", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		const joined: string[] = [];
+		const left: string[] = [];
+		(globalThis as any).__crew = {
+			join: (s: string) => joined.push(s),
+			leave: (s: string) => left.push(s),
+			send: () => {},
+		};
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("", h.ctx(repo));
+		expect(joined).toContain("plan");
+		expect(joined).toContain("work");
+		await h.commands.gantt.handler("stop", h.ctx(repo));
+		expect(left).toContain("plan");
+		expect(left).toContain("work");
+		delete (globalThis as any).__crew;
+	});
+
+	it("agent_settled injects a board-derived continuation naming the ready tickets", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("", h.ctx(repo));
+		const before = h.sent.length;
+		await h.fire("agent_settled", { type: "agent_settled" }, h.ctx(repo));
+		const cont = h.sent.slice(before).find((m) => m.text.includes("<gantt-conductor>"));
+		expect(cont).toBeDefined();
+		expect(cont?.text).toContain("ready: b1");
+		expect(cont?.text).toContain('action "dispatch-all"');
+	});
+
+	it("stays quiet while the board is unchanged and tickets are in flight", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("", h.ctx(repo));
+		await claim(ganttDir(), "b1", "test-session"); // in flight
+		await h.fire("agent_settled", { type: "agent_settled" }, h.ctx(repo));
+		const afterFirst = h.sent.length;
+		expect(h.sent.slice(afterFirst - 1).some((m) => m.text.includes("<gantt-conductor>"))).toBe(true);
+		await h.fire("agent_settled", { type: "agent_settled" }, h.ctx(repo));
+		const injected = h.sent.slice(afterFirst).filter((m) => m.text.includes("<gantt-conductor>"));
+		expect(injected).toHaveLength(0);
+	});
+
+	it("[GANTT: DONE] in an assistant message ends the loop", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("", h.ctx(repo));
+		expect(h.status.gantt).toContain("conductor");
+		await h.fire(
+			"message_end",
+			{ type: "message_end", message: { role: "assistant", content: "All done. [GANTT: DONE]" } },
+			h.ctx(repo),
+		);
+		expect(h.status.gantt).not.toContain("conductor");
+		// a settle after DONE injects nothing
+		await h.fire("agent_settled", { type: "agent_settled" }, h.ctx(repo));
+		const injected = h.sent.filter((m) => m.text.includes("<gantt-conductor>"));
+		expect(injected).toHaveLength(0);
+	});
+
+	it("tool action dispatch-all claims every ready ticket and returns one brief each", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		ticket("b2", "kind: build\nstate: open\nmode: afk\nblocked-by: b1", "# Claim");
+		ticket("r1", "kind: research\nstate: open\nmode: afk", "# Research");
+		ticket("h1", "kind: decision\nstate: open\nmode: hitl", "# Name it");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		const res = await h.tools.gantt.execute("1", { action: "dispatch-all" }, undefined, undefined, h.ctx(repo));
+		const text = res.content[0].text;
+		expect(text).toContain("=== b1 (build)");
+		expect(text).toContain("=== r1 (research)");
+		expect(text).not.toContain("=== b2"); // blocked by open b1 → not ready
+		expect(text).not.toContain("h1"); // hitl never dispatched
+		const board = loadBoard(ganttDir())!;
+		expect(board.tickets.get("b1")!.state).toBe("claimed");
+		expect(board.tickets.get("r1")!.state).toBe("claimed");
+		expect(board.tickets.get("b2")!.state).toBe("open");
+	});
+
+	it("tool actions conductor and stop arm and end the loop", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		initBoard();
+		ticket("b1", "kind: build\nstate: open\nmode: afk", "# Store");
+		commitAll();
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		const armed = await h.tools.gantt.execute("1", { action: "conductor" }, undefined, undefined, h.ctx(repo));
+		expect(armed.content[0].text).toContain("gantt CONDUCTOR");
+		expect(h.status.gantt).toContain("conductor");
+		const stopped = await h.tools.gantt.execute("1", { action: "stop" }, undefined, undefined, h.ctx(repo));
+		expect(stopped.content[0].text).toContain("conductor stopped");
+		expect(h.status.gantt).not.toContain("conductor");
+	});
+
+	it("plan/work command args point at the single /gantt loop", async () => {
+		const h = makeApi();
+		const ext = createGanttInlineExtension();
+		ext.factory(h.api);
+		await h.fire("session_start", { type: "session_start" }, h.ctx(repo));
+		await h.commands.gantt.handler("work", h.ctx(repo));
+		expect(h.notices.some((n) => n.text.includes("one loop now"))).toBe(true);
 	});
 });

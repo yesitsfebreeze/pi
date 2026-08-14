@@ -218,6 +218,30 @@ export function promptFor(dir: string, t: Ticket): string {
 // inline like any other ticket), the brief is promptHere's implement-it-
 // yourself doctrine, and the ready set is ranked by importance so the serial
 // worker always takes the ticket that unblocks the most.
+
+// conductor fan-out: claim EVERY ready afk ticket (all kinds — research too,
+// the conductor runs them like any other) and build each one's dispatch
+// brief. The conductor session then runs each ticket as its own parallel
+// subagent, so the board drains wide instead of one-at-a-time. Research
+// tickets get no special branch treatment here — the conductor dispatches
+// them through crew like every other kind, and crew children own their tree.
+export async function fanOutReady(
+	dir: string,
+	session: string,
+	brief: (t: Ticket) => string,
+): Promise<{ tickets: Ticket[]; briefs: string[]; unlocked: string[] }> {
+	const tickets: Ticket[] = [];
+	const briefs: string[] = [];
+	const unlocked: string[] = [];
+	for (;;) {
+		const next = await claimNext(dir, session, (t) => t.mode === "afk");
+		if (next.kind === "none") return { tickets, briefs, unlocked };
+		tickets.push(next.ticket);
+		briefs.push(brief(next.ticket));
+		if (next.kind === "unlocked") unlocked.push(next.ticket.id);
+	}
+}
+
 export async function step(
 	dir: string,
 	session: string,

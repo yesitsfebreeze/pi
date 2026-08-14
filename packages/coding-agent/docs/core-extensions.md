@@ -74,7 +74,7 @@ list.
 | 12 | `crew` | `crew`, `crew_send`, `crew_recv`, `crew_scope`, `crew_list` | `/crew`, `/discover` | Sub-agent dispatch against role profiles (`src/core/crew/profiles/*.md`), plus the walkie-talkie channel — a maildir outside the repo that lets dispatched agents steer and be steered. Picks models per role via `model-ledger`. |
 | 13 | `pi-backup` | — | — | Snapshots session state around tool execution so a bad edit can be recovered. |
 | 14 | `init` | — | `/init` | Generates a project context file for the current repo. |
-| 15 | `gantt` | `gantt` | `/gantt` | File-per-ticket board at `.pi/gantt/`; the gantt/cursor/decisions views are computed at read time and never written. `/gantt work` fans research tickets out to crew sub-agents. Inert when `.pi/gantt/` is absent. |
+| 15 | `gantt` | `gantt` | `/gantt` | File-per-ticket board at `.pi/gantt/`; the gantt/cursor/decisions views are computed at read time and never written. Bare `/gantt` arms the conductor — one session charts (no board), reconciles requirements into tickets, claims every ready ticket at once, runs each as its own parallel sub-agent in its own worktree, and closes as results land, until it replies `[GANTT: DONE]`. Control: `/gantt stop \| status \| chart \| release <id>`. Inert when `.pi/gantt/` is absent. |
 | 16 | `crawl` | `crawl`, `crawl_score`, `crawl_rescore`, `crawl_export`, `crawl_research`, `crawl_list`, `crawl_topics`, `crawl_status` | — | Web research and topic scoring into a local store at `.pi/crawl/`. No external CLI. |
 | 17 | `recipes` | `recipes` | — | Executable knowledge base — searchable, runnable recorded procedures. |
 | 18 | `interact` | `questionnaire`, `ask` | — | Lets the model ask you structured questions mid-turn through the TUI. |

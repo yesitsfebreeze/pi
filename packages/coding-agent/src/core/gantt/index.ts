@@ -4,10 +4,14 @@
 // written to disk. Absent `.pi/gantt/` dir: zero cost — no status, no
 // injection, the extension goes inert.
 //
-// Two sessions share one board: `/gantt plan` reconciles it against the
-// requirements, `/gantt work` claims tickets off it. Steering between them
-// rides the walkie-talkie channel (core/crew/crew-bridge), addressed to the
-// `plan` and `work` roles — gantt's mode IS a walkie-talkie scope.
+// One session runs the whole board: `/gantt` with no arguments arms the
+// CONDUCTOR — chart (no board) → reconcile (requirements → tickets) →
+// claim every ready ticket → run each as its own parallel subagent in its
+// own worktree → close as results land, looping until the agent replies
+// [GANTT: DONE]. The two-session plan/work split is gone from the command
+// surface; the `gantt` tool keeps the step-wise actions (work, work-here,
+// plan) for headless sessions and until loops, and the walkie-talkie
+// scopes exist so stray plan/work mail still reaches a conductor.
 //
 // Ported from the pi-gantt extension; the web board server, billboard slot,
 // mirror, and governance commands were shed (pi has its own TUI; the loop
@@ -20,13 +24,14 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { chartPrompt } from "./chart.ts";
 import { release, staleClaims } from "./claim.ts";
-import { type Step, step } from "./message.ts";
+import { bootstrapPrompt, childBrief, continuationPrompt, DONE_MARKER } from "./conductor.ts";
+import { fanOutReady, type Step, step } from "./message.ts";
 import { planPrompt } from "./plan.ts";
 import { boardClosed, prdPass } from "./prd.ts";
-import { type Board, cursor, dir, loadBoard, setGanttRoot } from "./store.ts";
+import { type Board, cursor, dir, gantt, loadBoard, setGanttRoot } from "./store.ts";
 
-/** Which half of the board this session is working. */
-export type Role = "plan" | "work";
+/** Which half of the board this session is working. "conductor" is both. */
+export type Role = "plan" | "work" | "conductor";
 
 // How long a claim may run without landing a commit that names it before
 // "clear" is worth doubting. Age alone says nothing — a ticket's mtime
@@ -41,7 +46,11 @@ export function statusLine(board: Board, role?: Role): string {
 	const afk = c.ready.find((id) => !c.waiting.includes(id));
 	const parts = [`gantt ${c.done}/${c.total}`, `next ${title(afk ?? c.ready[0] ?? "—")}`];
 	if (c.waiting.length) parts.push(`${c.waiting.length} waiting`);
-	if (role) parts.push(role === "plan" ? "plan" : "work");
+	if (role === "conductor") {
+		const claimed = [...board.tickets.values()].filter((t) => t.state === "claimed").length;
+		parts.push("conductor");
+		if (claimed) parts.push(`${claimed} in flight`);
+	} else if (role) parts.push(role === "plan" ? "plan" : "work");
 	return parts.join("  ");
 }
 
@@ -81,11 +90,75 @@ export function createGanttInlineExtension(): {
 			// re-fires on worker notifications — but the guard still keeps a
 			// manual `/gantt plan` from compounding.)
 			let _planInFlight = false;
+			// Conductor loop state: bare `/gantt` turns THIS session into the
+			// planner AND the worker, continuously. The loop re-injects a
+			// board-derived continuation on every settle (gated on change) until
+			// the agent emits [GANTT: DONE]. _lastConductorSig is the board's
+			// ready/claimed/waiting signature at the last injection, so settles
+			// that changed nothing stay quiet while subagents are in flight.
+			let _conductor = false;
+			let _lastConductorSig = "";
+			let _lastConductorTick = 0;
+			const HEARTBEAT_MS = 15 * 60 * 1000;
 
 			const doneIds = (board: Board): Set<string> =>
 				new Set([...board.tickets.values()].filter((t) => t.state === "done").map((t) => t.id));
 			const openIds = (board: Board): Set<string> =>
 				new Set([...board.tickets.values()].filter((t) => t.state === "open").map((t) => t.id));
+
+			// Board signature for the conductor's change gate: everything the
+			// continuation's "what to do" line depends on. Unchanged board +
+			// subagents in flight → no new injection (their results wake us).
+			function conductorSig(board: Board): string {
+				const c = cursor(board);
+				const claimed = [...board.tickets.values()]
+					.filter((t) => t.state === "claimed")
+					.map((t) => t.id)
+					.sort()
+					.join(",");
+				return `${c.done}/${c.total}|${c.ready.sort().join(",")}|${claimed}|${c.waiting.sort().join(",")}`;
+			}
+
+			// One conductor loop tick, run on every settle while the loop is
+			// armed. Re-injects the board-derived continuation only when there
+			// is something to do or the board moved; a quiet board with runs in
+			// flight stays quiet until a `# Crew — <handle> came back` followUp
+			// wakes the session, or the heartbeat forces a check (a child can
+			// die silently and nothing else would ever wake the loop).
+			function conductorTick(board: Board | null): void {
+				const sig = board ? conductorSig(board) : "";
+				const inFlight = board ? [...board.tickets.values()].filter((t) => t.state === "claimed").length : 0;
+				if (board && sig === _lastConductorSig && inFlight > 0 && Date.now() - _lastConductorTick < HEARTBEAT_MS)
+					return;
+				_lastConductorSig = sig;
+				_lastConductorTick = Date.now();
+				if (!board) {
+					pi.sendUserMessage(
+						[
+							"<gantt-conductor>",
+							"No board yet. Chart one now: from .pi/gantt/prd.md if it exists (uncovered PRD scope), else",
+							"from this conversation's goal — map.md + tickets/*.md, breadth over depth, independent tickets",
+							'unblocked. Unclear goal → ask the user. Then call the `gantt` tool action "dispatch-all" to',
+							"claim the ready tickets.",
+							"</gantt-conductor>",
+						].join("\n"),
+						{ deliverAs: "followUp" },
+					);
+					return;
+				}
+				pi.sendUserMessage(continuationPrompt(board), { deliverAs: "followUp" });
+			}
+
+			// End the conductor loop (message_end saw the DONE marker, or the
+			// user ran /gantt stop).
+			function conductorStop(): void {
+				_conductor = false;
+				_lastConductorSig = "";
+				_lastConductorTick = 0;
+				role = undefined;
+				wear(undefined);
+				paint();
+			}
 
 			// Auto-notify the counterpart role over the walkie-talkie bus. The
 			// loop fires this, not the agent. No live-peer guard — a message to
@@ -123,8 +196,15 @@ export function createGanttInlineExtension(): {
 					| { join?: (s: string) => void; leave?: (s: string) => void }
 					| undefined;
 				if (!bus) return;
-				for (const r of ["plan", "work"]) if (r !== next) bus.leave?.(r);
-				if (next) bus.join?.(next);
+				// The conductor IS both halves: it joins plan AND work so stray
+				// plan/work mail (a child, another session) still reaches it.
+				if (next === "conductor") {
+					bus.join?.("plan");
+					bus.join?.("work");
+				} else {
+					for (const r of ["plan", "work"]) if (r !== next) bus.leave?.(r);
+					if (next) bus.join?.(next);
+				}
 			}
 
 			/**
@@ -166,6 +246,19 @@ export function createGanttInlineExtension(): {
 				const planInFlight = _planInFlight;
 				_planInFlight = false;
 				if (planInFlight) return;
+				// Conductor: the loop drives itself — a board-derived continuation
+				// on every settle instead of the two-session duplex notify.
+				if (_conductor) {
+					let board: Board | null = null;
+					try {
+						board = existsSync(dir()) ? loadBoard(dir()) : null;
+					} catch {
+						board = null; // mid-chart invalid board — keep the loop alive
+					}
+					paint(board);
+					conductorTick(board);
+					return;
+				}
 				if (!existsSync(dir())) return;
 				// Duplex auto-notify: the hook, not the prompt, tells the
 				// counterpart what moved. One read serves both the status line
@@ -191,6 +284,26 @@ export function createGanttInlineExtension(): {
 				}
 			});
 
+			pi.on("message_end", (event) => {
+				// The conductor's one way out: the agent replies [GANTT: DONE] once
+				// nothing is ready, nothing is in flight, and reconcile added
+				// nothing. Anything else is a normal turn.
+				if (!_conductor) return;
+				if (event?.message?.role !== "assistant") return;
+				const content = event.message.content;
+				let text = "";
+				if (typeof content === "string") text = content;
+				else if (Array.isArray(content))
+					text = (content as Array<{ type?: string; text?: string }>)
+						.filter((b) => b?.type === "text")
+						.map((b) => b.text ?? "")
+						.join("");
+				if (text.includes(DONE_MARKER)) {
+					conductorStop();
+					ui?.notify?.(`gantt: ${DONE_MARKER} — conductor loop complete`, "info");
+				}
+			});
+
 			pi.on("session_shutdown", () => {
 				// Runs unconditionally. This used to be gated on a `wasLive` flag
 				// latched at session_start, so a board created mid-session skipped the
@@ -205,6 +318,9 @@ export function createGanttInlineExtension(): {
 				if ((globalThis as Record<string, unknown>).__gantt) {
 					delete (globalThis as Record<string, unknown>).__gantt;
 				}
+				_conductor = false;
+				_lastConductorSig = "";
+				_lastConductorTick = 0;
 			});
 
 			// ── tool: gantt ────────────────────────────────────────────────
@@ -221,6 +337,8 @@ export function createGanttInlineExtension(): {
 					"Work the gantt board without the /gantt slash command, so a headless or looping session can drive it. " +
 					'action "work" (default): claim the next ready ticket and RETURN its orchestration brief as the result — do that work, close the ticket (edit its file to state: done, drop the claim line, commit), then call this again for the next ticket. ' +
 					"Research tickets fanned out in the same step come back in the result too, to dispatch as parallel subagents. " +
+					'action "dispatch-all": claim EVERY ready afk ticket and return one implement-brief per ticket — the /gantt conductor loop runs each as its own parallel subagent in its own worktree. ' +
+					'action "conductor": arm the continuous loop on this session (chart → reconcile → dispatch → close, until the agent replies [GANTT: DONE]); "stop" ends it. ' +
 					'action "work-here": serial solo loop — claims the most important ready ticket (the one unblocking the most work), and the brief tells THIS session to implement it itself: no subagents, no worktrees, one ticket at a time, close it, call again; research tickets are claimed inline instead of fanned out. ' +
 					'action "status": the board\'s one-line state. "plan"/"chart": the planning brief. ' +
 					"When the result says nothing is dispatchable (clear, closed, waiting-on-you, or stale claims), the loop is done — stop calling.",
@@ -231,6 +349,9 @@ export function createGanttInlineExtension(): {
 							[
 								Type.Literal("work"),
 								Type.Literal("work-here"),
+								Type.Literal("dispatch-all"),
+								Type.Literal("conductor"),
+								Type.Literal("stop"),
 								Type.Literal("status"),
 								Type.Literal("plan"),
 								Type.Literal("chart"),
@@ -252,6 +373,22 @@ export function createGanttInlineExtension(): {
 					ui = ctx?.ui ?? ui;
 					const out = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 					const action = String(params?.action ?? "work").toLowerCase();
+					// conductor/stop do not need a board — arm or end the loop even
+					// when the board is absent (the loop charts it).
+					if (action === "conductor") {
+						if (_conductor) return out('gantt: conductor already running — action "stop" ends it');
+						_conductor = true;
+						_lastConductorSig = "";
+						_lastConductorTick = 0;
+						role = "conductor";
+						wear("conductor");
+						paint();
+						return out(bootstrapPrompt(root, dir()));
+					}
+					if (action === "stop") {
+						conductorStop();
+						return out("gantt: conductor stopped");
+					}
 					if (!existsSync(dir())) {
 						const p = prdPass(root, dir());
 						return out(
@@ -273,6 +410,46 @@ export function createGanttInlineExtension(): {
 						wear("plan");
 						_planInFlight = true;
 						return out(planPrompt(root, dir()));
+					}
+					if (action === "dispatch-all") {
+						// The conductor's claim step: every ready afk ticket, all
+						// kinds, in one pass, each with its implement-brief. The
+						// conductor then runs each as its own parallel subagent.
+						const fanned = await fanOutReady(dir(), session, (t) => childBrief(dir(), t));
+						paint();
+						if (fanned.tickets.length) {
+							(
+								(globalThis as Record<string, unknown>).__crew as { doing?: (s: string) => void } | undefined
+							)?.doing?.(`gantt dispatch-all: ${fanned.tickets.map((t) => t.id).join(", ")}`);
+							const parts: string[] = [];
+							if (fanned.unlocked.length)
+								parts.push(
+									`WARNING: ${fanned.unlocked.join(", ")} dispatched WITHOUT a lock — the board's commit path refused it (pre-commit hook? read-only index?). Fix the commit path.`,
+								);
+							fanned.tickets.forEach((t, i) => {
+								parts.push(
+									`=== ${t.id} (${t.kind}) — dispatch as ONE crew subagent in its OWN forest worktree ===\n\n${fanned.briefs[i]}`,
+								);
+							});
+							return out(parts.join("\n\n"));
+						}
+						// Nothing ready — say why so the conductor knows its next move.
+						const waiting = board ? cursor(board).waiting : [];
+						if (waiting.length) {
+							const names = waiting.map((id) => board?.tickets.get(id)?.title ?? id);
+							return out(
+								`gantt: nothing ready — ${waiting.length} waiting-on-you: ${names.join(", ")}. Surface them to the user.`,
+							);
+						}
+						if (boardClosed(board)) {
+							const p = prdPass(root, dir());
+							return out(
+								p.kind === "chart" ? p.prompt : "gantt: board closed and no prd.md — nothing to plan from.",
+							);
+						}
+						return out(
+							"gantt: nothing ready — run the reconcile pass (read the requirements, create tickets for uncovered scope), then dispatch-all again.",
+						);
 					}
 					// work / work-here: same step() the command runs, but the
 					// brief comes back as the result instead of a followUp.
@@ -355,7 +532,7 @@ export function createGanttInlineExtension(): {
 
 			// ── command: /gantt ────────────────────────────────────────────
 			pi.registerCommand("gantt", {
-				description: "Work the gantt board: work | work-here | plan [stop] | chart | status | release <id>",
+				description: "Continuous board loop: /gantt | stop | status | chart | release <id>",
 				handler: async (args: string, ctx: ExtensionCommandContext) => {
 					ui = ctx?.ui ?? ui;
 					root = ctx?.cwd ?? root;
@@ -365,7 +542,7 @@ export function createGanttInlineExtension(): {
 						.trim()
 						.toLowerCase();
 					// All board-aware paths validate before they act.
-					if (word !== "plan stop" && existsSync(dir())) {
+					if (word && word !== "stop" && existsSync(dir())) {
 						try {
 							loadBoard(dir());
 						} catch (e) {
@@ -376,43 +553,37 @@ export function createGanttInlineExtension(): {
 					const note = (text: string, level: "info" | "warning" | "error" = "info") =>
 						ctx.ui?.notify?.(text, level);
 
-					if (word === "plan" || word === "plan stop") {
-						if (word === "plan stop") {
-							role = undefined;
-							wear(undefined);
-							note("gantt: plan mode off");
-							paint();
+					// ── bare /gantt: the continuous conductor loop ──────────
+					// One session, no arguments: charts (no board), reconciles
+					// (requirements → tickets), claims every ready ticket at once,
+					// runs each as its own parallel subagent, closes as results
+					// land — until the agent replies [GANTT: DONE].
+					if (!word) {
+						if (_conductor) {
+							note("gantt: conductor already running — /gantt stop ends it");
 							return;
 						}
-						if (!existsSync(dir())) {
-							note("gantt: no .pi/gantt/ dir — /gantt chart to start one");
-							return;
-						}
-						role = "plan";
-						wear("plan");
-						_planInFlight = true;
-						pi.sendUserMessage(planPrompt(root, dir()), { deliverAs: "followUp" });
+						_conductor = true;
+						_lastConductorSig = "";
+						_lastConductorTick = 0;
+						role = "conductor";
+						wear("conductor");
+						pi.sendUserMessage(bootstrapPrompt(root, dir()), { deliverAs: "followUp" });
+						note(
+							"gantt: conductor started — this session charts, plans, and runs tickets in parallel until the board is done. Stop: /gantt stop",
+						);
 						paint();
+						return;
+					}
+					if (word === "stop") {
+						conductorStop();
+						note("gantt: conductor stopped");
 						return;
 					}
 					if (word === "chart") {
 						pi.sendUserMessage(chartPrompt(dir()), { deliverAs: "followUp" });
 						return;
 					}
-					// closed or missing board: the PRD engine decides.
-					const idle = (board: Board | null) => {
-						const p = prdPass(root, dir());
-						if (p.kind === "chart") {
-							pi.sendUserMessage(p.prompt, { deliverAs: "followUp" });
-						} else {
-							note(
-								board
-									? "gantt: board closed, no .pi/gantt/prd.md — nothing to plan from."
-									: "No .pi/gantt/ dir and no .pi/gantt/prd.md — /gantt chart to start one.",
-							);
-						}
-					};
-					if (!existsSync(dir())) return idle(null);
 					if (word === "status") {
 						try {
 							const board = loadBoard(dir());
@@ -443,66 +614,17 @@ export function createGanttInlineExtension(): {
 						paint();
 						return;
 					}
-					// work (default) and work-here share everything below except
-					// the step call: work-here fans nothing out and briefs this
-					// session to implement.
-					const here = word === "work-here";
-					if (role !== "work") {
-						role = "work";
-						wear("work");
-					}
-					let s: Step;
-					try {
-						s = here
-							? await step(dir(), session, undefined, true)
-							: await step(dir(), session, (r: { prompt: string }) =>
-									pi.sendUserMessage(r.prompt, { deliverAs: "followUp" }),
-								);
-					} catch (e) {
-						note(reconcileError((e as Error).message ?? String(e)), "error");
+					if (word === "plan" || word === "work" || word === "work-here") {
+						note(
+							"gantt: plan and work are one loop now — just /gantt (runs continuously, tickets in parallel). /gantt stop ends it.",
+							"warning",
+						);
 						return;
 					}
-					if (s.kind === "dispatch") {
-						(
-							(globalThis as Record<string, unknown>).__crew as { doing?: (s: string) => void } | undefined
-						)?.doing?.(`gantt ${here ? "work-here" : "work"}: ${s.ticket.id}`);
-						if (s.unlocked)
-							note(
-								`gantt: ${s.ticket.id} dispatched WITHOUT a lock — the board's commit path refused it (pre-commit hook? read-only index?). Work is running; nothing marks the ticket, so another session can take it too. Fix the commit path.`,
-								"warning",
-							);
-						pi.sendUserMessage(s.prompt, { deliverAs: "followUp" });
-					} else if (s.kind === "empty" && !s.spawned.length) {
-						if (s.waiting.length) {
-							const board = loadBoard(dir());
-							const names = s.waiting.map((id) => board?.tickets.get(id)?.title ?? id);
-							note(`gantt: AFK work done — ${s.waiting.length} waiting-on-you (${names.join(", ")})`);
-						} else if (boardClosed(loadBoard(dir()))) {
-							idle(loadBoard(dir()));
-						} else {
-							const board = loadBoard(dir());
-							const stale = board ? await staleClaims(board, STALE_CLAIM_MS) : [];
-							if (stale.length) {
-								const held = stale
-									.map(
-										(t) =>
-											`${t.id} (${Math.floor((Date.now() - t.mtimeMs) / 3600_000)}h, ${t.claim ?? "unknown"})`,
-									)
-									.join("; ");
-								note(
-									`gantt: nothing dispatchable — ${stale.length} stale claim${stale.length > 1 ? "s" : ""} holding the board: ${held}. /gantt release <id> frees one.`,
-									"warning",
-								);
-								notify("plan", `stale claims holding board: ${stale.map((t) => t.id).join(", ")}`, {
-									kind: "reconcile",
-								});
-							} else {
-								notify("plan", "nothing dispatchable — need work", { kind: "reconcile" });
-								note("gantt: clear — nothing open and unblocked");
-							}
-						}
-					}
-					paint();
+					note(
+						"gantt: /gantt starts the continuous loop. Control: /gantt stop | status | chart | release <id>",
+						"warning",
+					);
 				},
 			});
 		},
