@@ -51,6 +51,12 @@ export function createSlimInlineExtension(): InlineExtension {
 
 				const title = `slim turn ${event.turnIndex ?? "?"}`;
 				const text = `${title}: ${shown} → ${outcome}`;
+				// Only remember turns with something durable: a failure, or a real
+				// outcome. A successful silent turn ("read → (no text)") is pure
+				// noise — 96% of the llm store was exactly that class of dump
+				// (RECALL_PLAN F2b). The durable record lives in <kern> blocks and
+				// storeDecision; this hook is for what a turn proved, not that it ran.
+				if (failed === 0 && (outcome === "(no text)" || outcome === "")) return;
 				// Best-effort, fire-and-forget; the memory extension publishes __kern
 				// with storeObservation (kern CLI, fail-open when absent).
 				const kern = (globalThis as any).__kern;
