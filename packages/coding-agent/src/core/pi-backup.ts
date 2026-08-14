@@ -31,12 +31,20 @@ export interface BackupResult {
 	text: string;
 }
 
+// Bound every git call so a hung process (dead network, credential prompt,
+// wedged index) dies instead of accumulating across sessions — with several
+// sessions auto-syncing per tool call, unbounded pushes can exhaust the
+// process table (fork EAGAIN) and take the user's shell down with it.
+const GIT_TIMEOUT_MS = 60_000;
+const PUSH_TIMEOUT_MS = 120_000;
+
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
 	return execFileP("git", args, {
 		cwd,
 		encoding: "utf8",
 		env: env ? { ...process.env, ...env } : process.env,
 		maxBuffer: 32 * 1024 * 1024,
+		timeout: GIT_TIMEOUT_MS,
 	});
 }
 
@@ -69,9 +77,10 @@ function existingDataDirs(cwd: string): string[] {
 	return DATA_DIRS.filter((d) => existsSync(join(cwd, d)));
 }
 
-/** Relative paths (e.g. ".pi/trees") of nested git repos/worktrees under
- * the data dirs — these must never be committed to the orphan branch. */
-function detectNestedGitRoots(cwd: string, dirs: string[]): string[] {
+/** Relative paths (e.g. ".pi/trees") of nested git repos/worktrees and
+ * mis-rooted pi stores under the data dirs — these must never be committed
+ * to the orphan branch. */
+function detectNestedRoots(cwd: string, dirs: string[]): string[] {
 	const roots: string[] = [];
 	const stack = dirs.map((d) => join(cwd, d));
 	while (stack.length > 0) {
@@ -80,8 +89,16 @@ function detectNestedGitRoots(cwd: string, dirs: string[]): string[] {
 		try {
 			for (const e of readdirSync(dir, { withFileTypes: true })) {
 				if (e.name === ".git") {
-					// file (worktree pointer) or dir (nested repo)
+					// file (worktree pointer) or dir (nested repo): the containing
+					// directory is the nested root.
 					roots.push(relative(cwd, dir));
+					continue;
+				}
+				if (e.name === ".pi") {
+					// a pi store rooted inside the store (e.g. .pi/.pi from a
+					// session whose cwd was the store) — the dir itself is the
+					// nested root.
+					roots.push(relative(cwd, join(dir, e.name)));
 					continue;
 				}
 				if (e.isDirectory() && e.name !== "node_modules") stack.push(join(dir, e.name));
@@ -122,7 +139,7 @@ export async function pushPiBackup(cwd: string): Promise<BackupResult> {
 		await git(cwd, ["update-ref", `refs/heads/${ORPHAN_BRANCH}`, commit]);
 	}
 
-	const nested = detectNestedGitRoots(cwd, dirs);
+	const nested = detectNestedRoots(cwd, dirs);
 	const orphanGitignore = buildOrphanGitignore(nested);
 	// Unique per call: concurrent pi sessions share the repo but must not
 	// share a staging area.
@@ -170,7 +187,10 @@ export async function pushPiBackup(cwd: string): Promise<BackupResult> {
 
 /** Materialize the data dirs from the orphan branch into the working tree.
  * Only fills in dirs that are missing locally, so a fresh clone gets the data
- * without clobbering existing work. */
+ * without clobbering existing work. Never touches the real index: files land
+ * in the working tree only (git archive into a temp tar, extracted with tar),
+ * so main's ignore/untrack state survives and a repo that still tracks .pi
+ * paths (mid-migration, or gantt `!`-negations) is left exactly as it was. */
 export async function pullPiBackup(cwd: string): Promise<BackupResult> {
 	if (!(await isGitRepo(cwd))) {
 		return { ok: false, text: "not a git repo — nothing to pull" };
@@ -192,14 +212,17 @@ export async function pullPiBackup(cwd: string): Promise<BackupResult> {
 	const materialized: string[] = [];
 	for (const d of DATA_DIRS) {
 		if (existsSync(join(cwd, d))) continue;
+		const tmpTar = join(cwd, ".git", `pi-pull-archive-${process.pid}-${Math.random().toString(36).slice(2)}.tar`);
 		try {
-			// `git checkout <ref> -- <path>` also stages the path; reset so the
-			// materialized files stay ignored/untracked on main.
-			await git(cwd, ["checkout", ref, "--", d]);
-			await git(cwd, ["reset", "--quiet", "--", d]);
+			// Extract only the data dir; a mis-rooted store (.pi/.pi) that a
+			// stale branch still carries is excluded rather than resurrected.
+			await git(cwd, ["archive", "--format=tar", "-o", tmpTar, ref, "--", d, `:(exclude)${d}/.pi`]);
+			await execFileP("tar", ["-xf", tmpTar, "-C", cwd], { timeout: GIT_TIMEOUT_MS });
 			if (existsSync(join(cwd, d))) materialized.push(d);
 		} catch {
 			// path absent on the branch — skip
+		} finally {
+			rmSync(tmpTar, { force: true });
 		}
 	}
 
@@ -311,7 +334,12 @@ export function createPiBackupExtension(): InlineExtension {
 					const pushed = await pushPiBackup(cwd);
 					if (!pushed.ok) return;
 					try {
-						await execFileP("git", ["push", "origin", ORPHAN_BRANCH], { cwd });
+						// Force: the orphan branch is a pure mirror of local .pi
+						// state — last writer wins, never merge.
+						await execFileP("git", ["push", "--force", "origin", ORPHAN_BRANCH], {
+							cwd,
+							timeout: PUSH_TIMEOUT_MS,
+						});
 					} catch {
 						// offline or no remote — the local branch is still current
 					}

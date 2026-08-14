@@ -101,6 +101,58 @@ describe("pi-backup", () => {
 		}
 	});
 
+	it("pulls without re-tracking .pi on main (mid-migration or `!`-negation repos)", async () => {
+		const dir = tmpRepo();
+		try {
+			// HEAD still tracks .pi paths (the pre-migration state, or the
+			// gantt `!`-negation pattern) while the orphan branch carries
+			// newer content.
+			mkdirSync(join(dir, ".pi", "extensions"), { recursive: true });
+			writeFileSync(join(dir, ".pi", "extensions", "legacy.ts"), "old design: tracked on main");
+			git(dir, "add", ".pi");
+			git(dir, "commit", "-m", "old design: track .pi on main");
+			git(dir, "rm", "-rq", "--cached", ".pi");
+			writeFileSync(join(dir, ".gitignore"), ".pi/\n", "utf8");
+
+			await setupPiBackup(dir);
+			// Orphan branch carries newer content than main's stale copy.
+			writeFileSync(join(dir, ".pi", "extensions", "legacy.ts"), "orphan: newer content");
+			await pushPiBackup(dir);
+
+			// Wipe the working-tree data dir and pull it back.
+			rmSync(join(dir, ".pi"), { recursive: true, force: true });
+			const pull = await pullPiBackup(dir);
+			expect(pull.ok).toBe(true);
+			expect(readFileSync(join(dir, ".pi", "extensions", "legacy.ts"), "utf8")).toBe("orphan: newer content");
+			// The pull must not re-track .pi: main keeps its staged-deletion
+			// state (the `D` entry below) and the materialized files stay
+			// ignored/untracked — exactly the state before the pull.
+			expect(git(dir, "ls-files", ".pi")).toBe("");
+			const status = git(dir, "status", "--porcelain");
+			expect(status).toContain("D  .pi/extensions/legacy.ts");
+			expect(status).not.toContain("?? .pi");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("excludes a mis-rooted nested pi store (.pi/.pi) from the orphan branch", async () => {
+		const dir = tmpRepo();
+		try {
+			mkdirSync(join(dir, ".pi", ".pi", "memory", "thoughts"), { recursive: true });
+			writeFileSync(join(dir, ".pi", ".pi", "memory", "thoughts", "abc.json"), "nested store garbage");
+			writeFileSync(join(dir, ".pi", "memory.txt"), "agent state");
+
+			await setupPiBackup(dir);
+
+			const ls = git(dir, "ls-tree", "-r", "--name-only", "pi");
+			expect(ls).toContain(".pi/memory.txt");
+			expect(ls).not.toContain(".pi/.pi");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("pushes new data and pulls it back after local removal", async () => {
 		const dir = tmpRepo();
 		try {
