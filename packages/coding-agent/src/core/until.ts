@@ -46,7 +46,6 @@ interface LoopState {
 	seconds?: number;
 	cron?: string[];
 	message: string;
-	status: "active" | "stopped";
 	count: number;
 	started: string;
 	nextFire?: string;
@@ -230,10 +229,7 @@ export class UntilManager {
 	}
 
 	private _activeLoops(): LoopState[] {
-		return [...this._timers.values()]
-			.map((t) => t.state)
-			.filter((s) => s.status === "active")
-			.sort((a, b) => a.id.localeCompare(b.id));
+		return [...this._timers.values()].map((t) => t.state).sort((a, b) => a.id.localeCompare(b.id));
 	}
 
 	private _getLoop(id: string): LoopState | undefined {
@@ -266,7 +262,6 @@ export class UntilManager {
 		if (!t) return;
 		this._timers.delete(id);
 		const s = t.state;
-		if (s.status === "stopped") return;
 		if (!this._busy) this._fireLoop(s);
 		const delayMs = s.autoSeconds
 			? Math.max(1000, (s.autoSeconds ?? 0) * 1000)
@@ -429,7 +424,6 @@ export class UntilManager {
 			seconds: sched.kind === "sleep" ? sched.seconds : undefined,
 			cron: sched.kind === "cron" ? sched.cron : undefined,
 			message,
-			status: "active",
 			count: 0,
 			started: new Date().toISOString(),
 		};
@@ -453,7 +447,6 @@ export class UntilManager {
 				clearTimeout(t.handle);
 				this._timers.delete(s.id);
 			}
-			s.status = "stopped";
 			stopped.push(s.id);
 		}
 		this.onStatusChange?.();
@@ -487,7 +480,6 @@ export class UntilManager {
 		if (!id) return { ok: false, msg: "usage: /until fire <id>" };
 		const s = this._getLoop(id);
 		if (!s) return { ok: false, msg: `loop: no such id ${id}` };
-		if (s.status !== "active") return { ok: false, msg: `loop ${id} not active (${s.status})` };
 		this._fireLoop(s);
 		this.onStatusChange?.();
 		return { ok: true, msg: `loop ${id} fired (count=${s.count})` };
