@@ -45,3 +45,4 @@ collect.sh
 # Local feature state that re-fingerprints every session
 .pi/nvim/
 .pi/rigor/
+.pi/
